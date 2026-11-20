@@ -23,4 +23,4 @@ def _videos_dir():
 DOWNLOAD_DIR = os.path.join(_videos_dir(), "CineHaven")
 OLD_DATA_DIR = os.path.join(_xdg_data, "openreel")          # earlier name of the app
 OLD_DOWNLOAD_DIR = os.path.join(_videos_dir(), "OpenReel")
-UPDATE_REPO = None   # "owner/cinehaven" – set when the GitHub repository exists
+UPDATE_REPO = "pi5ck/cinehaven"   # GitHub repository the self-updater follows

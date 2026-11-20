@@ -156,6 +156,9 @@ class LibraryRow(Gtk.ListBoxRow):
                 state += f" · {fmt_time(left / st.download_rate)} left"
         if st.errc and st.errc.value():
             state = "Error: " + st.errc.message()
+        rs = self.win.settings.get("resume", {}).get(f"item:{it.key}")
+        if rs:
+            state += f" · ▶ resume at {fmt_time(rs['t'])}"
         self.sub.set_label(" · ".join(x for x in (state, trust) if x))
         self.play_btn.set_sensitive(it.file_index is not None)
 
@@ -181,7 +184,10 @@ class Window(Adw.ApplicationWindow):
         self._lang_done = False
         self.live = False
         self._live_t = 0
-        self.local_path = None        # file on disk being played (for resume)
+        self.local_path = None        # file on disk being played
+        self.resume_key = None        # what the current position is saved under
+        self._resume_cd = None        # countdown source of the resume prompt
+        self._last_pos_save = 0
 
         self.toasts = Adw.ToastOverlay()
         self.set_content(self.toasts)
@@ -416,6 +422,25 @@ class Window(Adw.ApplicationWindow):
             bb.append(w)
         self.buf_box = bb
         ov.add_overlay(bb)
+
+        # "Continue where you left off?" prompt
+        rb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, css_classes=["osd", "buffer-box"],
+                     halign=Gtk.Align.CENTER, valign=Gtk.Align.END, margin_bottom=120, visible=False)
+        rb.append(Gtk.Label(label="Continue where you left off?", css_classes=["title-3"]))
+        self.resume_info = Gtk.Label(css_classes=["dim-label"])
+        rb.append(self.resume_info)
+        btns = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
+        self.resume_btn = Gtk.Button(css_classes=["suggested-action", "pill"])
+        self.resume_btn.connect("clicked", lambda *_: self._resume_choice(True))
+        restart = Gtk.Button(label="⟲  Start over", css_classes=["pill"])
+        restart.connect("clicked", lambda *_: self._resume_choice(False))
+        btns.append(self.resume_btn)
+        btns.append(restart)
+        rb.append(btns)
+        self.resume_cd_lbl = Gtk.Label(css_classes=["dim-label", "caption"])
+        rb.append(self.resume_cd_lbl)
+        self.resume_box = rb
+        ov.add_overlay(rb)
 
         motion = Gtk.EventControllerMotion()
         motion.connect("motion", self._on_motion)
@@ -738,12 +763,13 @@ class Window(Adw.ApplicationWindow):
     def _play_now(self, it):
         self.pending_play = None
         self._remember_position()
-        start = None
+        self.resume_key = f"item:{it.key}"
+        start = self._saved_pos(self.resume_key)
         if it.is_complete():
             path = it.file_info()[0]
             url = path
             self.local_path = path
-            start = (self.settings.get("resume", {}).get(path) or {}).get("t")
+            start = start or self._saved_pos(path)
         else:
             url = it.stream_url()
             self.local_path = None
@@ -754,6 +780,7 @@ class Window(Adw.ApplicationWindow):
         self._lang_done = False
         self.doctor.start("local" if it.is_complete() else "torrent", url, it.title, item=it)
         self.video.play(url, subs, start=start)
+        self._offer_resume(start)
         self._waiting_first_frame = time.time()
 
     # ── player control ───────────────────────────────────────────────────
@@ -775,6 +802,8 @@ class Window(Adw.ApplicationWindow):
     def leave_player(self):
         self.doctor.stop()
         self._remember_position()
+        self._hide_resume()
+        self.resume_key = None
         self.local_path = None
         self.pending_play = None
         self._stop_translation()
@@ -876,7 +905,9 @@ class Window(Adw.ApplicationWindow):
 
     def play_live(self, ch, stream):
         self._remember_position()
+        self._hide_resume()
         self.local_path = None
+        self.resume_key = None
         self.enter_player(ch["name"], None)
         self.p_trust.set_label("● LIVE")
         self.p_trust.set_visible(True)
@@ -1023,6 +1054,13 @@ class Window(Adw.ApplicationWindow):
             return False
         k = Gdk.keyval_name(keyval)
         m = self.video.mpv
+        if self.resume_box.get_visible():
+            if k in ("space", "Return", "KP_Enter", "k", "p"):
+                self._resume_choice(True)
+                return True
+            if k in ("Home", "0", "BackSpace", "r"):
+                self._resume_choice(False)
+                return True
         acts = {
             "space": self.toggle_pause, "k": self.toggle_pause, "p": self.toggle_pause,
             "f": self.toggle_fullscreen, "F11": self.toggle_fullscreen,
@@ -1060,6 +1098,9 @@ class Window(Adw.ApplicationWindow):
             return True
         if self.pending_play is None:
             self.doctor.tick(pos, paused, cache_wait)
+        if pos and not paused and time.time() - self._last_pos_save > 15:
+            self._last_pos_save = time.time()
+            self._remember_position()
         self.pp.set_icon_name("media-playback-start-symbolic" if paused else "media-playback-pause-symbolic")
         if paused and not self.bot_rev.get_reveal_child():
             self._show_controls()
@@ -1333,30 +1374,89 @@ class Window(Adw.ApplicationWindow):
         self._stop_translation()
         self._lang_done = False
         self.local_path = path
-        start = (self.settings.get("resume", {}).get(path) or {}).get("t")
-        if start:
-            self.toast(f"Resuming from {fmt_time(start)} – right-click the video for “Play from the start”")
+        self.resume_key = path
+        start = self._saved_pos(path)
         self.doctor.start("local", path, title or os.path.basename(path))
         self.video.play(path, start=start)
+        self._offer_resume(start)
+
+    def _saved_pos(self, key):
+        e = self.settings.get("resume", {}).get(key) if key else None
+        return e.get("t") if e else None
 
     def _remember_position(self):
-        """Save where the user stopped so the video resumes there next time."""
-        path = self.local_path
-        if not path:
+        """Save where the user is, so the video can continue there next time."""
+        key = self.resume_key
+        if not key or self.resume_box.get_visible():      # don't overwrite while the prompt is up
             return
         try:
             pos, dur = self.video.mpv.time_pos, self.video.mpv.duration
         except Exception:
             return
         res = self.settings.setdefault("resume", {})
-        if pos and dur and 60 < pos < dur - 180:
-            res[path] = {"t": round(pos, 1), "dur": round(dur, 1), "when": time.time()}
-        elif pos and dur and pos >= dur - 180:
-            res.pop(path, None)           # finished – start from the beginning next time
+        if pos and dur and 30 < pos < dur - 120:
+            res[key] = {"t": round(pos, 1), "dur": round(dur, 1), "when": time.time(),
+                        "title": self.p_title.get_label()}
+        elif pos and dur and pos >= dur - 120:
+            res.pop(key, None)            # finished – start from the beginning next time
         if len(res) > 500:                # keep the newest 500
             for k in sorted(res, key=lambda k: res[k].get("when", 0))[:-500]:
                 res.pop(k)
         save_settings(self.settings)
+
+    # ── resume prompt ────────────────────────────────────────────────────
+    def _offer_resume(self, start):
+        self._hide_resume()
+        if not start:
+            return
+        self.video.mpv.pause = True              # wait at the saved spot until the user chooses
+        e = self.settings.get("resume", {}).get(self.resume_key) or {}
+        dur = e.get("dur")
+        self.resume_btn.set_label(f"▶  Resume from {fmt_time(start)}")
+        when = e.get("when")
+        ago = ""
+        if when:
+            d = time.time() - when
+            ago = ("earlier today" if d < 86400 else "yesterday" if d < 172800
+                   else f"{int(d // 86400)} days ago")
+        self.resume_info.set_label(f"You stopped at {fmt_time(start)}" + (f" of {fmt_time(dur)}" if dur else "")
+                                   + (f" · {ago}" if ago else ""))
+        self.resume_box.set_visible(True)
+        self.resume_btn.grab_focus()
+        self._resume_left = 10
+
+        def tick():
+            self._resume_left -= 1
+            if self._resume_left <= 0:
+                self._resume_cd = None
+                self._resume_choice(True)
+                return False
+            self.resume_cd_lbl.set_label(f"Resuming automatically in {self._resume_left} s")
+            return True
+        self.resume_cd_lbl.set_label(f"Resuming automatically in {self._resume_left} s")
+        self._resume_cd = GLib.timeout_add_seconds(1, tick)
+
+    def _hide_resume(self):
+        if self._resume_cd:
+            GLib.source_remove(self._resume_cd)
+            self._resume_cd = None
+        self.resume_box.set_visible(False)
+
+    def _resume_choice(self, resume):
+        if not self.resume_box.get_visible():
+            return
+        self._hide_resume()
+        m = self.video.mpv
+        if not resume:
+            self.settings.get("resume", {}).pop(self.resume_key, None)
+            save_settings(self.settings)
+            try:
+                m.seek(0, "absolute")
+            except Exception:
+                m.command("loadfile", m.path or "", "replace")
+            self.toast("Starting from the beginning")
+        m.pause = False
+        self._show_controls()
 
     def forget_resume(self, path):
         self.settings.get("resume", {}).pop(path, None)

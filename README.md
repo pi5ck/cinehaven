@@ -1,6 +1,6 @@
 # CineHaven
 
-**Search free movies, press play, and watch while they download.**
+**Search free movies, press play, and watch while they download** – plus free live TV, documentaries, your own video collection, and where to stream anything else legally.
 
 CineHaven is a Linux movie streamer and player. It's built on libtorrent (a faster, more modern engine than Transmission's) and mpv (every codec FFmpeg supports, plus hardware decoding).
 
@@ -39,18 +39,32 @@ CineHaven is a Linux movie streamer and player. It's built on libtorrent (a fast
 
 ## Install
 
-```bash
-./install.sh            # installs dependencies (asks for your password) and adds CineHaven to your app menu
-```
-
-Or build a `.deb` to share:
+**Ubuntu 24.04+ / Debian 13+ / Linux Mint 22+** (recommended – keeps itself up to date):
 
 ```bash
-packaging/build-deb.sh
-sudo apt install ./dist/cinehaven_1.0.0_all.deb
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.0.tar.gz
+tar xzf cinehaven-1.0.0.tar.gz && cd cinehaven-1.0.0
+./install.sh
 ```
 
-It needs GTK 4, libadwaita ≥ 1.5, python3-libtorrent ≥ 2.0, python3-mpv and libmpv. That means Ubuntu 24.04+, Fedora 40+, Arch or openSUSE Tumbleweed.
+The installer asks for your password once to add the system libraries (GTK, libtorrent, mpv). Then it installs CineHaven for your user and adds it to your app menu. It also works on **Fedora, Arch and openSUSE**.
+
+**Or use the .deb package** (Ubuntu/Debian):
+
+```bash
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.0_all.deb
+sudo apt install ./cinehaven_1.0.0_all.deb
+```
+
+The .deb version tells you when an update is out, but you install the update yourself. The install.sh version updates itself.
+
+Every download's checksum is listed in `SHA256SUMS` on the [releases page](https://github.com/pi5ck/cinehaven/releases).
+
+### Requirements
+GTK 4, libadwaita ≥ 1.5, python3-libtorrent ≥ 2.0, python3-mpv and libmpv. `ffmpeg` is optional; it makes preview pictures in *My Videos*.
+
+### Problems?
+Open *Menu → Help & diagnostics → Copy report* and paste the report into a [new issue](https://github.com/pi5ck/cinehaven/issues).
 
 ## Keyboard shortcuts (in the player)
 
