@@ -190,3 +190,30 @@ def documentaries(country, limit=40):
             t["services"] = svc
             out.append(t)
     return out
+
+
+# ── library services: free with a library card ─────────────────────────────
+# Kanopy and Hoopla stream free to members of participating public libraries. They
+# don't operate in every country, so they're checked where they do.
+LIBRARY_SERVICES = ("kanopy", "hoopla")
+LIBRARY_COUNTRIES = ("US", "CA", "GB", "AU", "NZ")
+LIBRARY_HELP = ("Free with a card from a participating public library. Kanopy and Hoopla work with "
+                "libraries mainly in the US and Canada, plus some in the UK, Australia and New Zealand. "
+                "Sign in on kanopy.com or hoopladigital.com with your library card.")
+
+
+def library_offers(title_id, force=False):
+    """[{service, url, countries}] for Kanopy / Hoopla, merged across the countries they serve."""
+    found = {}
+    for c in LIBRARY_COUNTRIES:
+        try:
+            offs = offers(title_id, c, force=force)
+        except Exception:
+            continue
+        for o in offs:
+            name = o["service"]
+            if any(s in name.lower() for s in LIBRARY_SERVICES):
+                hit = found.setdefault(name, {"service": name, "url": o["url"], "countries": []})
+                if c not in hit["countries"]:
+                    hit["countries"].append(c)
+    return sorted(found.values(), key=lambda x: x["service"])

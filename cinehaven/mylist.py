@@ -66,8 +66,8 @@ class TitleRow(Gtk.ListBoxRow):
         rm.connect("clicked", lambda *_: page.remove(t))
         box.append(rm)
 
-    def show_offers(self, per_country):
-        """per_country: list of (country, offers | Exception)."""
+    def show_offers(self, per_country, library=()):
+        """per_country: list of (country, offers | Exception); library: Kanopy / Hoopla offers."""
         while (c := self.offers_box.get_first_child()):
             self.offers_box.remove(c)
         for country, offers in per_country:
@@ -98,6 +98,20 @@ class TitleRow(Gtk.ListBoxRow):
                                    css_classes=["flat", "chip", CHIP_CLASS.get(o["kind"], "plain")])
                     b.connect("clicked", lambda *_, u=o["url"]: self.page.open_url(u))
                     flow.append(b)
+            line.append(flow)
+            self.offers_box.append(line)
+        if library:
+            line = Gtk.Box(spacing=6, tooltip_text=watch.LIBRARY_HELP)
+            line.append(Gtk.Label(label="📚 Library card", css_classes=["country-lbl"], width_chars=14, xalign=0,
+                                  valign=Gtk.Align.START, margin_top=3))
+            flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, hexpand=True,
+                               max_children_per_line=6, column_spacing=6, row_spacing=4)
+            for o in library:
+                flags = "".join(FLAG.get(c, c) for c in o["countries"])
+                b = Gtk.Button(label=f"{o['service']} · Free {flags} ↗", tooltip_text=watch.LIBRARY_HELP,
+                               css_classes=["flat", "chip", "success"])
+                b.connect("clicked", lambda *_, u=o["url"]: self.page.open_url(u))
+                flow.append(b)
             line.append(flow)
             self.offers_box.append(line)
 
@@ -263,7 +277,11 @@ class MyListPage(Gtk.Box):
                     res.append((c, watch.offers(row.t["id"], c, force=force)))
                 except Exception as e:
                     res.append((c, e))
-            GLib.idle_add(row.show_offers, res)
+            try:
+                lib = watch.library_offers(row.t["id"], force=force)
+            except Exception:
+                lib = []
+            GLib.idle_add(row.show_offers, res, lib)
         self.pool.submit(work)
 
     # ── search ────────────────────────────────────────────────────────────
@@ -320,7 +338,7 @@ class StreamCard(Gtk.Box):
         meta = ("Series" if t.get("kind") == "series" else "Film") + (f" · {t['year']}" if t.get("year") else "")
         self.append(Gtk.Label(label=meta, xalign=0, css_classes=["dim-label", "caption"]))
         for svc, (url, flags) in list(t["services"].items())[:3]:
-            b = Gtk.Button(label=f"{svc} {flags} ↗", css_classes=["flat", "chip", "accent"], tooltip_text=f"Open {svc}")
+            b = Gtk.Button(label=f"{svc} {flags} ↗", css_classes=["flat", "chip", "accent"], tooltip_text=(watch.LIBRARY_HELP if svc.startswith("📚") else f"Open {svc}"))
             b.get_child().set_ellipsize(Pango.EllipsizeMode.END)
             b.connect("clicked", lambda *_, u=url: page.open_url(u))
             self.append(b)

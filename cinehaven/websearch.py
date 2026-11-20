@@ -4,6 +4,7 @@ One query fans out to:
   * official full-movie uploads on YouTube (studio / distributor channels only)
   * every streaming service in the user's countries via JustWatch – free (with ads)
     services first, then subscription, rent and buy
+  * Kanopy and Hoopla (free with a participating library card – US, CA, UK, AU, NZ)
 (The Internet Archive search, which plays inside CineHaven, runs alongside in app.py.)
 Pirate sites are never searched.
 """
@@ -49,6 +50,13 @@ def _streaming(query, countries, limit=8):
                 label = f"{o['service']} · {'Free' if o['kind'] in FREE_KINDS else o['label']}"
                 u, flags = services.get(label, (o["url"], ""))
                 services[label] = (u, flags + FLAG[c])
+        try:
+            for o in watch.library_offers(t["id"]):
+                services[f"📚 {o['service']} · Free"] = (
+                    o["url"], "".join(FLAG.get(c, c) for c in o["countries"]))
+                free = True
+        except Exception:
+            pass
         order = lambda kv: (0 if "· Free" in kv[0] else 1, kv[0])  # noqa: E731
         if not services:      # not offered here right now – still show it, with a search link
             q = urllib.parse.quote(t["title"])
