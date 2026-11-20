@@ -1,8 +1,8 @@
-# Push a tag like v1.0.1 → builds the .deb + tarball and publishes a GitHub Release.
+# Push a tag like v1.0.4 → builds the .deb + tarball and publishes a GitHub Release.
 name: release
+# Manual only for now: releases are published with `gh release create` (see README).
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:

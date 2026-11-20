@@ -1,0 +1,62 @@
+# Starts CineHaven for real on Linux, Windows and macOS (and FreeBSD in a VM) on every push.
+name: platforms
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-libtorrent python3-mpv libmpv2 xvfb ffmpeg
+      - name: Smoke test
+        run: xvfb-run -a env GDK_BACKEND=x11 python3 packaging/smoke_test.py
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-python-pip
+            mingw-w64-ucrt-x86_64-mpv
+            mingw-w64-ucrt-x86_64-ffmpeg
+      - name: Install libtorrent (Python bindings)
+        run: |
+          pacman -Ss libtorrent || true
+          pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-python-libtorrent-rasterbar \
+            || pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-libtorrent-rasterbar
+          python -c "import libtorrent; print('libtorrent', libtorrent.__version__)"
+      - name: Install python-mpv
+        run: pip install --break-system-packages python-mpv
+      - name: Smoke test
+        run: python packaging/smoke_test.py
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libraries
+        run: |
+          brew install gtk4 libadwaita pygobject3 mpv libtorrent-rasterbar ffmpeg
+          PY=$(brew --prefix)/bin/python3
+          echo "PY=$PY" >> $GITHUB_ENV
+          $PY -m pip install --break-system-packages python-mpv
+          $PY -c "import libtorrent; print('libtorrent', libtorrent.__version__)"
+      - name: Smoke test
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: /opt/homebrew/lib
+        run: $PY packaging/smoke_test.py
