@@ -13,14 +13,14 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import catalog, health, safety, translate  # noqa: E402
+from . import catalog, fixvideo, health, safety, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
 from .mylist import CSS as MYLIST_CSS, MyListPage, StreamCard, streaming_docs  # noqa: E402
 from .livetv_ui import CSS as LIVE_CSS, LiveTVPage  # noqa: E402
 from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
-from .youtube_ui import CSS as YT_CSS, YouTubePage  # noqa: E402
+from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage  # noqa: E402
 
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
@@ -206,6 +206,7 @@ class Window(Adw.ApplicationWindow):
 
         self.doctor = PlaybackDoctor(self)
         self.dl_doctor = DownloadDoctor(self)
+        threading.Thread(target=fixvideo.cleanup, daemon=True).start()
         GLib.timeout_add(1000, self._tick)
         GLib.timeout_add(2500, self._report_selfcheck)
         GLib.timeout_add_seconds(30, lambda: (self.check_updates(), False)[1])
@@ -298,6 +299,7 @@ class Window(Adw.ApplicationWindow):
         self.disc_stack = Gtk.Stack()
         sc = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        inner.append(self._build_web_shelf())
         inner.append(self._build_doc_shelf())
         self.free_lbl = Gtk.Label(xalign=0, css_classes=["title-4"], margin_start=22, margin_top=6,
                                   margin_bottom=4, visible=False)
@@ -464,6 +466,78 @@ class Window(Adw.ApplicationWindow):
         self._last_motion = (0, 0)
         return ov
 
+    # ── search everywhere (YouTube official uploads + every streaming service) ──
+    def _build_web_shelf(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=16, margin_end=16,
+                      margin_bottom=10, visible=False)
+        self.web_lbl = Gtk.Label(xalign=0, css_classes=["title-4"], margin_start=6)
+        box.append(self.web_lbl)
+        self.web_yt_lbl = Gtk.Label(label="On YouTube – free, posted by the studio", xalign=0,
+                                    css_classes=["heading"], margin_start=6, margin_top=4)
+        box.append(self.web_yt_lbl)
+        self.web_yt_row = Gtk.Box(spacing=6)
+        hs = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        hs.set_child(self.web_yt_row)
+        self.web_yt_scroll = hs
+        box.append(hs)
+        self.web_st_lbl = Gtk.Label(label="Streaming services – free ones first", xalign=0,
+                                    css_classes=["heading"], margin_start=6, margin_top=4)
+        box.append(self.web_st_lbl)
+        self.web_st_row = Gtk.Box(spacing=6)
+        hs2 = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        hs2.set_child(self.web_st_row)
+        self.web_st_scroll = hs2
+        box.append(hs2)
+        self.web_box = box
+        self._web_found = 0
+        return box
+
+    def _search_web(self, gen, text):
+        for row in (self.web_yt_row, self.web_st_row):
+            while (c := row.get_first_child()):
+                row.remove(c)
+        self._web_found = 0
+        if not text.strip():
+            self.web_box.set_visible(False)
+            return
+        self.web_box.set_visible(True)
+        for w in (self.web_yt_lbl, self.web_yt_scroll, self.web_st_lbl, self.web_st_scroll):
+            w.set_visible(False)
+        self.web_lbl.set_label("Searching YouTube and every streaming service…")
+        countries = self.mylist.countries() if hasattr(self, "mylist") else ["US"]
+
+        def work():
+            res = websearch.everywhere(text, countries)
+            GLib.idle_add(done, res)
+
+        def done(res):
+            if gen != self.search_gen:
+                return False
+            yt, st = res["youtube"], res["streaming"]
+            for f in yt:
+                card = FilmCard(self, f)
+                click = Gtk.GestureClick()
+                click.connect("released", lambda *_a, f=f: self.youtube.show_details(f))
+                card.add_controller(click)
+                self.web_yt_row.append(card)
+            for t in st:
+                self.web_st_row.append(StreamCard(self.mylist, t))
+            self.web_yt_lbl.set_visible(bool(yt))
+            self.web_yt_scroll.set_visible(bool(yt))
+            self.web_st_lbl.set_visible(bool(st))
+            self.web_st_scroll.set_visible(bool(st))
+            self._web_found = len(yt) + len(st)
+            if self._web_found:
+                self.web_lbl.set_label(f"Found across the web for “{text}”")
+                if self.disc_stack.get_visible_child_name() == "empty":
+                    self.disc_stack.set_visible_child_name("results")
+                    self.free_lbl.set_visible(False)
+            else:
+                self.web_lbl.set_label("Not found on YouTube or any streaming service"
+                                       + (" (offline?)" if res["errors"] else ""))
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
     # ── documentaries ─────────────────────────────────────────────────────
     def _build_doc_shelf(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=16, margin_end=16,
@@ -545,6 +619,8 @@ class Window(Adw.ApplicationWindow):
         self.free_lbl.set_label("Free to watch right here – public domain")
         if docs_home and hasattr(self, "mylist"):
             self._load_doc_shelf()
+        if hasattr(self, "web_box"):
+            self._search_web(gen, text)
 
         def work():
             try:
@@ -578,7 +654,11 @@ class Window(Adw.ApplicationWindow):
         if hidden_unv:
             bits.append(f"{hidden_unv} unverified hidden")
         self.status_lbl.set_label(" · ".join(bits))
-        self.disc_stack.set_visible_child_name("results" if shown else "empty")
+        has_web = bool(text.strip()) and getattr(self, "_web_found", 0)
+        if text.strip():
+            self.free_lbl.set_label("Free to watch right here – plays in CineHaven")
+            self.free_lbl.set_visible(bool(shown))
+        self.disc_stack.set_visible_child_name("results" if shown or has_web else "empty")
 
     def _toggle_setting(self, action, value, key):
         action.set_state(value)

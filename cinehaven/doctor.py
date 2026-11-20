@@ -1,4 +1,5 @@
 """Automatic recovery from playback and download problems."""
+import os
 import shutil
 import subprocess
 import threading
@@ -8,6 +9,7 @@ import gi
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402
 
+from . import fixvideo  # noqa: E402
 from .health import SAFE_MODE, log  # noqa: E402
 
 END_ERROR = 4
@@ -35,7 +37,8 @@ class PlaybackDoctor:
         self.src = {"kind": kind, "url": url, "title": title, "item": item, "ch": ch,
                     "stream_idx": stream_idx, "tried": set(), "attempts": 0,
                     "started": time.time(), "last_pos": None, "last_move": time.time(),
-                    "healing": False, "ok_since": None}
+                    "healing": False, "ok_since": None, "orig": None}
+        self.win.video.recent_errors.clear()     # errors from the previous title don't count
         log.info("Play %s: %s (%s)", kind, title, url if kind != "local" else "file")
 
     def stop(self):
@@ -56,6 +59,9 @@ class PlaybackDoctor:
         if not s or s["healing"]:
             return
         now = time.time()
+        if s["kind"] == "local" and "convert" not in s["tried"] and self._codec_failed():
+            self.heal("missing codec")
+            return
         if pos is not None and pos != s["last_pos"]:
             s["last_pos"], s["last_move"] = pos, now
             if s["ok_since"] is None:
@@ -68,7 +74,7 @@ class PlaybackDoctor:
             return
         limit = 45 if s["kind"] == "live" else (90 if cache_wait else 25)
         if pos is None:                           # never started
-            limit = 60 if s["kind"] == "live" else 75
+            limit = 60 if s["kind"] == "live" else (12 if s["kind"] == "local" else 75)
         if now - s["last_move"] > limit:
             self.heal("frozen" if pos is not None else "won't start")
 
@@ -129,12 +135,95 @@ class PlaybackDoctor:
             return self.give_up("the channel is off air")
         if kind == "url" and step("reconnect"):
             return self._reload(pos, "Reconnecting")
+        path = s["orig"] or s["url"]
+        if kind == "local" and os.path.isfile(path):
+            codec = why == "missing codec" or any(w in recent for w in (
+                "decoder", "codec", "unsupported", "recognize file format", "no video or audio"))
+            if step("convert", codec):
+                return self._fix_file(path, "convert", why)
+            if step("repair-damaged-file"):
+                m.demuxer_lavf_o = "fflags=+genpts+discardcorrupt"
+                return self._reload(pos + 5 if pos else None, "Working around a damaged part of the file")
+            if step("rebuild"):
+                return self._fix_file(path, "repair", why, pos)
+            if step("convert"):
+                return self._fix_file(path, "convert", why)
         if step("repair-damaged-file"):
             m.demuxer_lavf_o = "fflags=+genpts+discardcorrupt"
             return self._reload(pos + 5 if pos else None, "Working around a damaged part of the file")
         if step("skip-ahead", pos > 0):
             return self._reload(pos + 30, "Skipping past a damaged section")
         return self.give_up(why)
+
+    def _codec_failed(self):
+        """A decoder is missing AND the picture (or, for audio-only files, the sound) isn't playing."""
+        errs = " ".join(self.win.video.recent_errors).lower()
+        if not any(w in errs for w in ("failed to initialize a decoder", "could not find decoder",
+                                       "no decoder", "unsupported codec", "codec not supported")):
+            return False
+        m = self.win.video.mpv
+        try:
+            tracks = m.track_list or []
+            has_video = any(t.get("type") == "video" and not t.get("albumart") for t in tracks)
+            if has_video:
+                return not m.video_params
+            return not m.audio_params
+        except Exception:
+            return True
+
+    def _fix_file(self, path, mode, why, pos=None):
+        """Repair or convert the file in the background; play the result as soon as it can."""
+        s = self.src
+        s["healing"] = True
+        s["orig"] = path
+        win = self.win
+        title = "Making this video playable…"
+        log.info("Fix: %s %s (%s)", mode, s["title"], why)
+        win.set_buffering(title, "Checking the video format…", None)
+        alive = lambda: self.src is s  # noqa: E731
+
+        def status(text, frac=None):
+            GLib.idle_add(lambda: alive() and s["healing"] and win.set_buffering(title, text, frac) and False)
+
+        def play(target, subs=(), message="", at=None):
+            if not alive():
+                return False
+            s["url"] = target
+            m = win.video.mpv
+            m.demuxer_lavf_o = ""
+            s["healing"] = False
+            self._reload(at, message)
+            for sub in subs:
+                GLib.timeout_add(1500, lambda f=sub: (m.command_async("sub-add", f, "auto"), False)[1])
+            win.toast(message)
+            return False
+
+        def work():
+            try:
+                if mode == "convert":
+                    fixvideo.convert_live(
+                        path, stop=lambda: not alive(), status=status,
+                        ready=lambda pl, subs: GLib.idle_add(
+                            play, pl, subs, "Converted on the fly – playing while the rest converts"))
+                else:
+                    out = fixvideo.make_playable(path, "repair", progress=status, stop=lambda: not alive())
+                    GLib.idle_add(play, out, (), "Rebuilt the damaged file – playing now", pos)
+            except fixvideo.DRMError as e:
+                GLib.idle_add(lambda: alive() and self.give_up(str(e), drm=True) and False)
+            except InterruptedError:
+                pass
+            except Exception as e:
+                log.error("Couldn't %s %s: %s", mode, path, e)
+
+                def next_fix():
+                    if alive():
+                        s["healing"] = False
+                        self.heal(why)
+                    return False
+                GLib.idle_add(next_fix)
+
+        threading.Thread(target=work, daemon=True).start()
+        return False
 
     def _reload(self, pos, message):
         s = self.src
@@ -160,7 +249,7 @@ class PlaybackDoctor:
         GLib.timeout_add(600, go)
         return False
 
-    def give_up(self, why):
+    def give_up(self, why, drm=False):
         s = self.src
         if not s:
             return False
@@ -170,9 +259,11 @@ class PlaybackDoctor:
         win.set_buffering(None, None, None)
         vlc = shutil.which("vlc")
         local = s["kind"] in ("local", "url") or (s["kind"] == "torrent" and s["item"] is not None)
-        dlg = Adw.AlertDialog(heading=f"Couldn't play “{s['title']}”",
-                              body=("CineHaven tried several automatic fixes but this one still won't play"
-                                    f" ({why}). The details are in the log (Menu → Help & diagnostics)."))
+        body = why if drm else ("CineHaven tried every automatic fix – including downloading the full set of"
+                                " video codecs and converting the file – but this one still won't play"
+                                f" ({why}). The file may be badly damaged or incomplete. The details are in"
+                                " the log (Menu → Help & diagnostics).")
+        dlg = Adw.AlertDialog(heading=f"Couldn't play “{s['title']}”", body=body)
         dlg.add_response("close", "Close")
         dlg.add_response("retry", "Try again")
         if vlc and local:

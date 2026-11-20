@@ -1,15 +1,35 @@
 import os
+import sys
+
+WINDOWS = sys.platform.startswith("win")
+MACOS = sys.platform == "darwin"
 
 APP_NAME = "CineHaven"
 APP_ID = os.environ.get("CINEHAVEN_APP_ID", "io.github.cinehaven.CineHaven")
-APP_VERSION = "1.0.2"
-USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+Linux; streaming torrent player)"
+APP_VERSION = "1.0.3"
+USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+{sys.platform}; streaming torrent player)"
 
-_xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+
+def _data_home():
+    """Where per-user app data lives on this platform."""
+    if os.environ.get("XDG_DATA_HOME"):
+        return os.environ["XDG_DATA_HOME"]
+    if WINDOWS:
+        return os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    if MACOS:
+        return os.path.expanduser("~/Library/Application Support")
+    return os.path.expanduser("~/.local/share")
+
+
+_xdg_data = _data_home()
 DATA_DIR = os.path.join(_xdg_data, "cinehaven")
 
 
 def _videos_dir():
+    if MACOS:
+        return os.path.expanduser("~/Movies")
+    if WINDOWS:
+        return os.path.join(os.path.expanduser("~"), "Videos")
     try:
         import subprocess
         d = subprocess.run(["xdg-user-dir", "VIDEOS"], capture_output=True, text=True, timeout=2).stdout.strip()

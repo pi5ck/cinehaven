@@ -144,20 +144,11 @@ class MyVideosPage(Gtk.Box):
         self._first_scan_done = bool(self.videos)
 
     # ── live folder watching ─────────────────────────────────────────────
-    def _setup_watchers(self):
-        wanted = []
-        for root in L.watch_dirs() + list(self.win.settings.get("extra_folders", [])):
-            wanted.append(root)
-            try:                                           # + two levels of sub-folders
-                for e in os.scandir(root):
-                    if e.is_dir(follow_symlinks=False) and not e.name.startswith("."):
-                        wanted.append(e.path)
-                        for e2 in os.scandir(e.path):
-                            if e2.is_dir(follow_symlinks=False) and not e2.name.startswith("."):
-                                wanted.append(e2.path)
-            except OSError:
-                pass
-        wanted = wanted[:600]
+    def _setup_watchers(self, wanted=None):
+        """Watch every folder for new videos (the list is built off the main thread by rescan)."""
+        if wanted is None:
+            wanted = L.watch_dirs() + list(self.win.settings.get("extra_folders", []))
+        wanted = set(wanted)
         for d in list(self.monitors):
             if d not in wanted:
                 self.monitors.pop(d).cancel()
@@ -271,9 +262,13 @@ class MyVideosPage(Gtk.Box):
             except Exception as e:
                 print("scan failed:", e)
                 vids = None
-            GLib.idle_add(done, vids)
+            try:
+                dirs = L.watch_tree(self.win.settings.get("extra_folders", []))
+            except Exception:
+                dirs = None
+            GLib.idle_add(done, vids, dirs)
 
-        def done(vids):
+        def done(vids, dirs=None):
             self.scanning = False
             self.rescan_btn.set_sensitive(True)
             self.last_scan = time.time()
@@ -296,7 +291,7 @@ class MyVideosPage(Gtk.Box):
                 self._first_scan_done = True
                 if any(v.get("busy") for v in vids) and not self._pending:
                     self.schedule_rescan(30)                # check again once copying has finished
-            self._setup_watchers()
+            self._setup_watchers(dirs)
             if getattr(self, "_again", False):
                 self.schedule_rescan(1)
             self._update_status()

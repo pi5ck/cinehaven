@@ -189,3 +189,59 @@ def remove_pick(vid):
 
 def watch_url(vid):
     return WATCH_URL + vid
+
+
+SEARCH_URL = "https://www.youtube.com/results?search_query="
+
+
+def _walk(o, out):
+    if isinstance(o, dict):
+        if "videoRenderer" in o:
+            out.append(o["videoRenderer"])
+        for v in o.values():
+            _walk(v, out)
+    elif isinstance(o, list):
+        for v in o:
+            _walk(v, out)
+
+
+def _minutes(length):
+    try:
+        parts = [int(p) for p in (length or "").split(":")]
+    except ValueError:
+        return 0
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    return parts[0] * 60 + parts[1] + parts[2] / 60
+
+
+def search(query, limit=12):
+    """Full-length films (60+ min) matching `query`, uploaded by the official channels only."""
+    official = dict(CHANNELS)
+    req = urllib.request.Request(SEARCH_URL + urllib.parse.quote_plus(f"{query} full movie"),
+                                 headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)",
+                                          "Accept-Language": "en"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        page = r.read().decode("utf-8", "replace")
+    m = re.search(r"var ytInitialData = (\{.*?\});</script>", page)
+    if not m:
+        return []
+    found = []
+    _walk(json.loads(m.group(1)), found)
+    out, seen = [], set()
+    for v in found:
+        owner = (v.get("ownerText") or {}).get("runs", [{}])[0]
+        cid = owner.get("navigationEndpoint", {}).get("browseEndpoint", {}).get("browseId")
+        raw = "".join(r.get("text", "") for r in (v.get("title") or {}).get("runs", []))
+        mins = _minutes((v.get("lengthText") or {}).get("simpleText"))
+        if cid not in official or mins < 60 or NOT_FILM_RE.search(raw) or v["videoId"] in seen:
+            continue
+        seen.add(v["videoId"])
+        desc = "".join(r.get("text", "") for s in v.get("detailedMetadataSnippets", [])
+                       for r in s.get("snippetText", {}).get("runs", []))
+        out.append({"id": v["videoId"], "title": clean_title(raw), "raw_title": raw, "year": _year(raw),
+                    "channel": official[cid], "description": desc[:400], "official": True,
+                    "minutes": int(mins), "thumb": f"https://i.ytimg.com/vi/{v['videoId']}/hqdefault.jpg"})
+        if len(out) >= limit:
+            break
+    return out

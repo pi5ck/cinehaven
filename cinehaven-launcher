@@ -11,7 +11,7 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-CRASH_SIGNALS = {signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS, signal.SIGILL, signal.SIGFPE}
+CRASH_SIGNALS = {getattr(signal, n) for n in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE") if hasattr(signal, n)}
 
 
 def _setup_paths():
@@ -34,14 +34,22 @@ def _setup_paths():
 
 
 def _crash_log(msg):
-    d = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "cinehaven")
+    d = _data_dir()
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "cinehaven.log"), "a") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " CRASH-GUARD " + msg + "\n")
 
 
 def _data_dir():
-    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "cinehaven")
+    if os.environ.get("XDG_DATA_HOME"):
+        base = os.environ["XDG_DATA_HOME"]
+    elif sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.path.expanduser("~/.local/share")
+    return os.path.join(base, "cinehaven")
 
 
 def _rollback_if_new_version_crashed(ran_for, crashed):
@@ -78,7 +86,9 @@ def guard():
             env["CINEHAVEN_SAFE_MODE"] = "1"
         started = time.time()
         rc = subprocess.call([sys.executable, os.path.realpath(__file__), *args], env=env)
-        crashed = (rc < 0 and -rc in CRASH_SIGNALS) or rc == 1
+        # Unix: killed by a crash signal. Windows: an unhandled exception code (0xC000…).
+        crashed = (rc < 0 and -rc in CRASH_SIGNALS) or rc == 1 or \
+            (sys.platform.startswith("win") and (rc & 0xFFFFFFFF) >= 0xC0000000)
         if _rollback_if_new_version_crashed(time.time() - started, crashed):
             crashes, safe, args = [], False, []
             continue
@@ -90,9 +100,11 @@ def guard():
         _crash_log(f"CineHaven stopped unexpectedly ({why}); crash {len(crashes)} in 10 min")
         if len(crashes) >= 4:
             _crash_log("Too many crashes – giving up until the next manual start")
-            subprocess.call(["notify-send", "-i", "io.github.cinehaven.CineHaven", "CineHaven",
-                             "CineHaven keeps stopping. Open it again, or see the log in "
-                             "~/.local/share/cinehaven/cinehaven.log"])
+            import shutil
+            if shutil.which("notify-send"):
+                subprocess.call(["notify-send", "-i", "io.github.cinehaven.CineHaven", "CineHaven",
+                                 "CineHaven keeps stopping. Open it again, or see the log in "
+                                 + os.path.join(_data_dir(), "cinehaven.log")])
             return rc
         safe = len(crashes) >= 2          # second crash in a row → safe mode
         args = []                          # don't re-open whatever might have caused it

@@ -22,23 +22,48 @@ def _load(*names):
     return None
 
 
-_egl = _load("libEGL.so.1", "libEGL.so")
-_glx = _load("libGL.so.1", "libGL.so")
-_gl = _load("libOpenGL.so.0", "libGL.so.1", "libGL.so")
-if _egl:
-    _egl.eglGetProcAddress.restype = ctypes.c_void_p
-    _egl.eglGetProcAddress.argtypes = [ctypes.c_char_p]
-if _glx:
-    _glx.glXGetProcAddressARB.restype = ctypes.c_void_p
-    _glx.glXGetProcAddressARB.argtypes = [ctypes.c_char_p]
+import sys  # noqa: E402
+
+if sys.platform.startswith("win"):
+    _opengl32 = ctypes.WinDLL("opengl32")
+    _kernel32 = ctypes.WinDLL("kernel32")
+    _opengl32.wglGetProcAddress.restype = ctypes.c_void_p
+    _opengl32.wglGetProcAddress.argtypes = [ctypes.c_char_p]
+    _kernel32.GetProcAddress.restype = ctypes.c_void_p
+    _kernel32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    _gl = _opengl32
+
+    def _get_proc(_ctx, name):
+        addr = _opengl32.wglGetProcAddress(name)
+        if not addr or addr in (1, 2, 3, -1):          # OpenGL 1.1 functions live in opengl32.dll itself
+            addr = _kernel32.GetProcAddress(_opengl32._handle, name)
+        return addr or 0
+elif sys.platform == "darwin":
+    _gl = ctypes.CDLL("/System/Library/Frameworks/OpenGL.framework/OpenGL")
+    _dl = ctypes.CDLL(None)
+    _dl.dlsym.restype = ctypes.c_void_p
+    _dl.dlsym.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+    def _get_proc(_ctx, name):
+        return _dl.dlsym(ctypes.c_void_p(_gl._handle), name) or 0
+else:                                                   # Linux, BSD and other Unix (EGL or GLX)
+    _egl = _load("libEGL.so.1", "libEGL.so")
+    _glx = _load("libGL.so.1", "libGL.so")
+    _gl = _load("libOpenGL.so.0", "libGL.so.1", "libGL.so")
+    if _egl:
+        _egl.eglGetProcAddress.restype = ctypes.c_void_p
+        _egl.eglGetProcAddress.argtypes = [ctypes.c_char_p]
+    if _glx:
+        _glx.glXGetProcAddressARB.restype = ctypes.c_void_p
+        _glx.glXGetProcAddressARB.argtypes = [ctypes.c_char_p]
+
+    def _get_proc(_ctx, name):
+        addr = _egl.eglGetProcAddress(name) if _egl else None
+        if not addr and _glx:
+            addr = _glx.glXGetProcAddressARB(name)
+        return addr or 0
+
 _gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]
-
-
-def _get_proc(_ctx, name):
-    addr = _egl.eglGetProcAddress(name) if _egl else None
-    if not addr and _glx:
-        addr = _glx.glXGetProcAddressARB(name)
-    return addr or 0
 
 
 class VideoView(Gtk.GLArea):

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import subprocess
 import time
 import urllib.parse
@@ -23,6 +24,9 @@ SKIP_DIRS = {"snap", "node_modules", "__pycache__", "site-packages", "dist-packa
              "steamapps", "lost+found", "$RECYCLE.BIN", "System Volume Information", "Windows",
              "Program Files", "Program Files (x86)", "ProgramData", "AppData"}
 
+if sys.platform == "darwin":
+    SKIP_DIRS |= {"Library", "Applications", "System"}
+
 TAGS = re.compile(r"\b(2160p|1080p|720p|576p|480p|4k|uhd|hdr|blu-?ray|brrip|bdrip|dvdrip|dvd5|dvd9|dvd|"
                   r"web-?dl|webrip|web|hdtv|hdrip|amzn|nf|x264|x265|h\.?264|h\.?265|hevc|xvid|divx|"
                   r"aac|ac3|ddp?|dts|5\.1|7\.1|2ch|10bit|repack|proper|extended|remastered|"
@@ -33,9 +37,28 @@ PART = re.compile(r"\b(cd|disc|disk|part|pt)[ ._-]?(\d)\b", re.I)
 GENERIC = re.compile(r"^(disc|disk|cd|part|movie|video|film|vts_\d+_\d+)[ ._-]?\d*$", re.I)
 
 
+def _other_roots(out):
+    """Windows drive letters and macOS volumes (Linux uses /proc/mounts below)."""
+    import string
+    import sys
+    if sys.platform.startswith("win"):
+        for letter in string.ascii_uppercase:
+            d = f"{letter}:\\"
+            if letter not in "AB" and os.path.isdir(d) and not any(d.lower() == r.lower() for r in out):
+                out.append(d)
+    elif sys.platform == "darwin":
+        try:
+            for e in os.scandir("/Volumes"):
+                if e.is_dir() and not os.path.islink(e.path):
+                    out.append(e.path)
+        except OSError:
+            pass
+
+
 def roots():
     """Home folder plus every mounted data disk (internal partitions, USB, SD cards)."""
     out = [os.path.expanduser("~")]
+    _other_roots(out)
     try:
         with open("/proc/mounts") as f:
             for line in f:
@@ -121,7 +144,8 @@ def watch_dirs():
     """Folders where new videos usually appear (watched live for changes)."""
     out = []
     try:
-        dl = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True, timeout=2).stdout.strip()
+        dl = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True,
+                            timeout=2).stdout.strip() if shutil.which("xdg-user-dir") else ""
     except Exception:
         dl = ""
     home = os.path.expanduser("~")
@@ -130,6 +154,50 @@ def watch_dirs():
         if d and os.path.isdir(d) and d != home and d not in out:
             out.append(d)
     out += [r for r in roots() if r != home and r not in out]
+    return out
+
+
+MAX_WATCH = 6000      # folders watched live (the system allows 65,536+)
+NOT_MEDIA_NAMES = {"cache", ".cache", "build", "builds", "target", "vendor", "venv", ".venv", "env",
+                   "chroot", "rootfs", "sysroot", "squashfs-root", "out", "obj", "src", "include", "lib"}
+
+
+def _not_media_tree(d):
+    """Code projects and operating-system trees: never where videos are added."""
+    if os.path.basename(d).lower() in NOT_MEDIA_NAMES:
+        return True
+    try:
+        names = set(os.listdir(d))
+    except OSError:
+        return True
+    return ".git" in names or {"etc", "usr", "bin"} <= names or "package.json" in names \
+        or "Makefile" in names or "meson.build" in names or "setup.py" in names or "pyproject.toml" in names
+
+
+def watch_tree(extra=()):
+    """Every folder to watch live: the usual video folders first, then the whole home
+    folder and every drive, shallowest folders first. Hidden and system folders are skipped."""
+    home = os.path.expanduser("~")
+    queue = list(watch_dirs()) + list(extra) + [home]
+    out, seen = [], set()
+    i = 0
+    while i < len(queue) and len(out) < MAX_WATCH:
+        d = queue[i]
+        i += 1
+        if d in seen:
+            continue
+        seen.add(d)
+        if d != home and _not_media_tree(d):
+            continue
+        out.append(d)
+        try:
+            for e in os.scandir(d):
+                if e.name.startswith(".") or e.name in SKIP_DIRS or not e.is_dir(follow_symlinks=False):
+                    continue
+                if e.path not in seen and not e.path.startswith(SYSTEM_PREFIXES):
+                    queue.append(e.path)
+        except OSError:
+            pass
     return out
 
 
