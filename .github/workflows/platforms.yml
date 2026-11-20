@@ -58,7 +58,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lt-install
-          key: libtorrent-2.1.2-ucrt64-v1
+          key: libtorrent-2.1.2-ucrt64-v2
       - name: Build libtorrent Python bindings
         if: steps.lt-cache.outputs.cache-hit != 'true'
         run: |
@@ -66,6 +66,7 @@ jobs:
           cmake -S lt-src -B lt-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -Dpython-bindings=ON -Dpython-egg-info=OFF -DBUILD_SHARED_LIBS=ON \
             -Dbuild_tests=OFF -Dbuild_examples=OFF -Dbuild_tools=OFF \
+            -DPython3_EXECUTABLE="$(cygpath -m "$(command -v python)")" -DPython3_FIND_REGISTRY=NEVER \
             -DCMAKE_INSTALL_PREFIX="$PWD/lt-install"
           cmake --build lt-build
           cmake --install lt-build
