@@ -42,8 +42,8 @@ CineHaven is a Linux movie streamer and player. It's built on libtorrent (a fast
 **Ubuntu 24.04+ / Debian 13+ / Linux Mint 22+** (recommended – keeps itself up to date):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.0.tar.gz
-tar xzf cinehaven-1.0.0.tar.gz && cd cinehaven-1.0.0
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.1.tar.gz
+tar xzf cinehaven-1.0.1.tar.gz && cd cinehaven-1.0.1
 ./install.sh
 ```
 
@@ -52,8 +52,8 @@ The installer asks for your password once to add the system libraries (GTK, libt
 **Or use the .deb package** (Ubuntu/Debian):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.0_all.deb
-sudo apt install ./cinehaven_1.0.0_all.deb
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.1_all.deb
+sudo apt install ./cinehaven_1.0.1_all.deb
 ```
 
 The .deb version tells you when an update is out, but you install the update yourself. The install.sh version updates itself.
