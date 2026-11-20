@@ -82,8 +82,11 @@ class VideoView(Gtk.GLArea):
             log_handler=self._on_mpv_log, loglevel="warn",
             vo="libmpv", hwdec="no" if SAFE_MODE else "auto-safe", keep_open="yes", idle="yes",
             input_default_bindings=False, input_vo_keyboard=False, osc=False,
-            cache="yes", demuxer_max_bytes="200MiB", demuxer_readahead_secs=30,
-            network_timeout=120, sub_auto="fuzzy", slang="en,eng", alang="en,eng",
+            # a big read-ahead buffer rides out short network drops without a hiccup, and the
+            # stream reader reconnects by itself; longer outages are handled by the doctor
+            cache="yes", demuxer_max_bytes="400MiB", demuxer_max_back_bytes="100MiB", demuxer_readahead_secs=120,
+            stream_lavf_o="reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=15",
+            network_timeout=30, sub_auto="fuzzy", slang="en,eng", alang="en,eng",
             ytdl=False, osd_level=1, osd_font_size=38, volume=100, volume_max=150,
             user_agent="CineHaven")
         self.ctx = None

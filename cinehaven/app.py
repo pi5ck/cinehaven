@@ -13,7 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import ai, catalog, enhance, fixvideo, health, safety, translate, websearch  # noqa: E402
+from . import ai, cast, catalog, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
@@ -28,6 +28,7 @@ BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
          catalog.UNVERIFIED: ("⚠ Unverified", "warning")}
 
 CSS = b"""
+.skip-btn { font-weight: bold; font-size: 1.1em; padding: 10px 22px; }
 .poster { border-radius: 10px; background: alpha(currentColor, .08); }
 .movie-card { padding: 6px; border-radius: 14px; }
 .movie-card:hover { background: alpha(currentColor, .06); }
@@ -204,6 +205,7 @@ class Window(Adw.ApplicationWindow):
         drop.connect("drop", self._on_drop)
         self.add_controller(drop)
 
+        self.remote = remote.Remote(lambda c, v: GLib.idle_add(self._remote_command, c, v))
         self.doctor = PlaybackDoctor(self)
         self.dl_doctor = DownloadDoctor(self)
         threading.Thread(target=fixvideo.cleanup, daemon=True).start()
@@ -244,6 +246,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("English movies only", "win.english-only")
         menu.append("Auto English subtitles", "win.auto-english")
         menu.append("Show unverified titles", "win.show-unverified")
+        menu.append("Phone remote", "win.phone-remote")
         menu.append("Open downloads folder", "win.open-downloads")
         menu.append("Check for updates", "win.check-updates")
         menu.append("Help & diagnostics", "win.diagnostics")
@@ -254,6 +257,7 @@ class Window(Adw.ApplicationWindow):
         for name, cb in (("open-magnet", self.ask_magnet), ("open-torrent", self.pick_torrent),
                          ("open-video", self.pick_video), ("about", self.show_about),
                          ("diagnostics", self.show_diagnostics),
+                         ("phone-remote", lambda *_: self.show_remote()),
                          ("check-updates", lambda *_: self.check_updates(manual=True)),
                          ("open-downloads", lambda *_: Gio.AppInfo.launch_default_for_uri(
                              GLib.filename_to_uri(DOWNLOAD_DIR), None))):
@@ -288,6 +292,12 @@ class Window(Adw.ApplicationWindow):
             self.cat_btns[key] = b
             b.connect("toggled", lambda btn, k=key: btn.get_active() and self._set_category(k))
             cats.append(b)
+        sug = Gtk.Button(label="✨ Suggest films", css_classes=["pill", "suggested-action"],
+                         tooltip_text="Describe what you feel like watching in the search box, e.g. "
+                                      "“a quiet, heartfelt film about a father and son”, then press this. "
+                                      "AI on this computer finds real films that match.")
+        sug.connect("clicked", lambda *_: self.suggest_films(self.search.get_text()))
+        cats.append(sug)
         disc.append(cats)
         self.status_lbl = Gtk.Label(css_classes=["dim-label"], margin_bottom=6)
         disc.append(self.status_lbl)
@@ -299,6 +309,7 @@ class Window(Adw.ApplicationWindow):
         self.disc_stack = Gtk.Stack()
         sc = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        inner.append(self._build_ai_shelf())
         inner.append(self._build_web_shelf())
         inner.append(self._build_doc_shelf())
         self.free_lbl = Gtk.Label(xalign=0, css_classes=["title-4"], margin_start=22, margin_top=6,
@@ -377,6 +388,14 @@ class Window(Adw.ApplicationWindow):
         top.append(self.p_title)
         self.p_trust = Gtk.Label(css_classes=["badge", "success"])
         top.append(self.p_trust)
+        rb_ = Gtk.Button(icon_name="phone-symbolic", tooltip_text="Use your phone as a remote",
+                         css_classes=["flat", "circular"])
+        rb_.connect("clicked", lambda *_: self.show_remote())
+        top.append(rb_)
+        self.cast_btn = Gtk.MenuButton(icon_name="video-display-symbolic", tooltip_text="Play on a TV",
+                                       css_classes=["flat", "circular"])
+        self.cast_btn.set_create_popup_func(self._build_cast_popover)
+        top.append(self.cast_btn)
         self.top_rev = Gtk.Revealer(child=top, valign=Gtk.Align.START, reveal_child=True,
                                     transition_type=Gtk.RevealerTransitionType.CROSSFADE)
         ov.add_overlay(self.top_rev)
@@ -435,6 +454,35 @@ class Window(Adw.ApplicationWindow):
         self.buf_box = bb
         ov.add_overlay(bb)
 
+        # "Playing on <TV>" banner while casting
+        cb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=["osd", "buffer-box"],
+                     halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, visible=False)
+        cb.append(Gtk.Image(icon_name="video-display-symbolic", pixel_size=64))
+        self.cast_lbl = Gtk.Label(css_classes=["title-2"])
+        cb.append(self.cast_lbl)
+        self.cast_sub = Gtk.Label(css_classes=["dim-label"], wrap=True, max_width_chars=48,
+                                  justify=Gtk.Justification.CENTER)
+        cb.append(self.cast_sub)
+        stopc = Gtk.Button(label="Stop casting – watch here", css_classes=["pill"], halign=Gtk.Align.CENTER)
+        stopc.connect("clicked", lambda *_: self.stop_casting(resume_here=True))
+        cb.append(stopc)
+        self.cast_box = cb
+        ov.add_overlay(cb)
+        self.cast_dev = None
+        self._cast_status = {}
+        self._cast_poll = 0
+
+        # Skip intro / credits, and Next episode
+        sk = Gtk.Box(spacing=8, halign=Gtk.Align.END, valign=Gtk.Align.END, margin_end=24, margin_bottom=110)
+        self.skip_btn = Gtk.Button(css_classes=["osd", "pill", "skip-btn"], visible=False)
+        self.skip_btn.connect("clicked", lambda *_: self._do_skip(manual=True))
+        sk.append(self.skip_btn)
+        self.next_btn = Gtk.Button(css_classes=["osd", "pill", "suggested-action", "skip-btn"], visible=False)
+        self.next_btn.connect("clicked", lambda *_: self._play_next())
+        sk.append(self.next_btn)
+        ov.add_overlay(sk)
+        self._skip = {"path": None, "segs": [], "done": set(), "next": None, "cd": None}
+
         # "Continue where you left off?" prompt
         rb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, css_classes=["osd", "buffer-box"],
                      halign=Gtk.Align.CENTER, valign=Gtk.Align.END, margin_bottom=120, visible=False)
@@ -465,6 +513,81 @@ class Window(Adw.ApplicationWindow):
         self.video.add_controller(scroll)
         self._last_motion = (0, 0)
         return ov
+
+    # ── "describe what you feel like watching" (local AI) ──────────────────
+    def _build_ai_shelf(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=16, margin_end=16,
+                      margin_bottom=10, visible=False)
+        head = Gtk.Box(spacing=8)
+        self.ai_lbl = Gtk.Label(xalign=0, hexpand=True, wrap=True, css_classes=["title-4"], margin_start=6)
+        head.append(self.ai_lbl)
+        close = Gtk.Button(icon_name="window-close-symbolic", css_classes=["flat", "circular"],
+                           tooltip_text="Hide suggestions")
+        close.connect("clicked", lambda *_: (setattr(self, "ai_gen", self.ai_gen + 1), box.set_visible(False)))
+        head.append(close)
+        box.append(head)
+        self.ai_sub = Gtk.Label(xalign=0, wrap=True, css_classes=["dim-label", "caption"], margin_start=6)
+        box.append(self.ai_sub)
+        self.ai_row = Gtk.Box(spacing=6)
+        hs = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        hs.set_child(self.ai_row)
+        self.ai_scroll = hs
+        box.append(hs)
+        self.ai_box = box
+        self.ai_gen = 0
+        return box
+
+    def suggest_films(self, text):
+        text = text.strip()
+        if len(text.split()) < 2:
+            self.toasts.add_toast(Adw.Toast(title="Describe what you feel like watching in the search box first – "
+                                                  "e.g. “funny space adventure for the family”", timeout=5))
+            self.search.grab_focus()
+            return
+        self.ai_gen += 1
+        gen = self.ai_gen
+        while (c := self.ai_row.get_first_child()):
+            self.ai_row.remove(c)
+        self.ai_scroll.set_visible(False)
+        self.ai_box.set_visible(True)
+        self.ai_lbl.set_label(f"✨ Suggestions for “{text}”")
+        self.ai_sub.set_label("Starting the AI on this computer…")
+        if self.disc_stack.get_visible_child_name() != "results":
+            self.disc_stack.set_visible_child_name("results")
+        countries = self.mylist.countries() if hasattr(self, "mylist") else ["US"]
+
+        def say(msg):
+            GLib.idle_add(lambda: gen == self.ai_gen and self.ai_sub.set_label(msg) and False)
+
+        def work():
+            try:
+                res, used = recommend.suggest(text, countries, progress=say)
+                GLib.idle_add(done, res, used, None)
+            except recommend.NoModel as e:
+                GLib.idle_add(done, None, None, str(e))
+            except Exception as e:
+                msg = ("The film catalogue is busy – try again in a minute" if "429" in str(e)
+                       else "Couldn't get suggestions – check your connection")
+                GLib.idle_add(done, None, None, msg)
+
+        def done(res, used, err):
+            if gen != self.ai_gen:
+                return False
+            if err:
+                self.ai_sub.set_label(err)
+                return False
+            if not res:
+                self.ai_sub.set_label("No films matched – try describing it differently")
+                return False
+            for t in res:
+                card = StreamCard(self.mylist, t)
+                card.set_tooltip_text(t.get("why") or None)
+                self.ai_row.append(card)
+            self.ai_scroll.set_visible(True)
+            self.ai_sub.set_label(f"Real films picked and ranked by AI on this computer ({used}). "
+                                  "Hover a film to see what it's about. Free options are listed first.")
+            return False
+        threading.Thread(target=work, daemon=True).start()
 
     # ── search everywhere (YouTube official uploads + every streaming service) ──
     def _build_web_shelf(self):
@@ -654,7 +777,7 @@ class Window(Adw.ApplicationWindow):
         if hidden_unv:
             bits.append(f"{hidden_unv} unverified hidden")
         self.status_lbl.set_label(" · ".join(bits))
-        has_web = bool(text.strip()) and getattr(self, "_web_found", 0)
+        has_web = (bool(text.strip()) and getattr(self, "_web_found", 0)) or self.ai_box.get_visible()
         if text.strip():
             self.free_lbl.set_label("Free to watch right here – plays in CineHaven")
             self.free_lbl.set_visible(bool(shown))
@@ -893,6 +1016,8 @@ class Window(Adw.ApplicationWindow):
         self._show_controls()
 
     def leave_player(self):
+        if self.cast_dev:
+            self.stop_casting(resume_here=False)
         self._stop_ai_subs()
         self.doctor.stop()
         self._remember_position()
@@ -922,10 +1047,22 @@ class Window(Adw.ApplicationWindow):
             self.buf_bar.set_fraction(frac)
 
     def toggle_pause(self):
+        if self.cast_dev:
+            playing = self._cast_status.get("state") in ("PLAYING", "BUFFERING")
+            self._cast_do(self.cast_dev.pause if playing else self.cast_dev.resume)
+            self._cast_status["state"] = "PAUSED" if playing else "PLAYING"
+            self._show_controls()
+            return
         self.video.mpv.pause = not self.video.mpv.pause
         self._show_controls()
 
     def seek_rel(self, s):
+        if self.cast_dev:
+            pos = self._cast_status.get("pos") or 0
+            self._cast_status["pos"] = max(0, pos + s)
+            self._cast_do(lambda: self.cast_dev.seek(max(0, pos + s)))
+            self._show_controls()
+            return
         try:
             self.video.mpv.seek(s, "relative")
         except Exception:
@@ -933,6 +1070,10 @@ class Window(Adw.ApplicationWindow):
         self._show_controls()
 
     def _on_seek(self, _scale, _scroll, value):
+        if self.cast_dev:
+            self._cast_status["pos"] = max(0, value)
+            self._cast_do(lambda: self.cast_dev.seek(max(0, value)))
+            return False
         try:
             self.video.mpv.seek(max(0, value), "absolute")
         except Exception:
@@ -940,6 +1081,9 @@ class Window(Adw.ApplicationWindow):
         return False
 
     def _on_volume(self, _b, v):
+        if self.cast_dev:
+            self._cast_do(lambda: self.cast_dev.volume(min(100, v)))
+            return
         self.video.mpv.volume = v
         self.settings["volume"] = v
 
@@ -991,7 +1135,9 @@ class Window(Adw.ApplicationWindow):
         for key, title, sub in (
                 ("enhance_picture", "Enhance picture", "AI upscaling, sharper detail, less noise"),
                 ("dialogue_boost", "Dialogue boost", "Clearer voices over music and effects"),
-                ("night_mode", "Night mode", "No sudden loud bangs; quiet parts stay audible")):
+                ("night_mode", "Night mode", "No sudden loud bangs; quiet parts stay audible"),
+                ("auto_skip", "Skip intros automatically", "Also recaps; found from chapters or the theme tune"),
+                ("autoplay_next", "Play next episode", "Starts the next episode when the credits roll")):
             row = Gtk.Box(spacing=12, margin_top=2)
             col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
             col.append(Gtk.Label(label=title, xalign=0))
@@ -1002,18 +1148,24 @@ class Window(Adw.ApplicationWindow):
                 if live:
                     note.set_label(f"On now: {live}")
             row.append(col)
-            sw = Gtk.Switch(active=bool(self.settings.get(key)), valign=Gtk.Align.CENTER)
+            sw = Gtk.Switch(active=self._setting(key), valign=Gtk.Align.CENTER)
             sw.connect("notify::active", lambda w, _p, k=key: self._set_enhancement(k, w.get_active()))
             row.append(sw)
             box.append(row)
         pop.set_child(box)
         mb.set_popover(pop)
 
+    ON_BY_DEFAULT = ("auto_skip", "autoplay_next")
+
+    def _setting(self, key):
+        return bool(self.settings.get(key, key in self.ON_BY_DEFAULT))
+
     def _set_enhancement(self, key, on):
         self.settings[key] = on
         save_settings(self.settings)
         self._apply_enhancements()
-        names = {"enhance_picture": "Enhance picture", "dialogue_boost": "Dialogue boost", "night_mode": "Night mode"}
+        names = {"enhance_picture": "Enhance picture", "dialogue_boost": "Dialogue boost", "night_mode": "Night mode",
+                 "auto_skip": "Skip intros automatically", "autoplay_next": "Play next episode"}
         self.toast(f"{names[key]} {'on' if on else 'off'}")
 
     def _apply_enhancements(self):
@@ -1324,9 +1476,14 @@ class Window(Adw.ApplicationWindow):
         return False
 
     def _player_tick(self):
+        if self.remote.running:
+            self._remote_state()
         if self.root.get_visible_child_name() != "player":
             return True
         m = self.video.mpv
+        if self.cast_dev:
+            self._cast_tick()
+            return True
         try:
             pos, dur = m.time_pos, m.duration
             paused, cache_wait = m.pause, m.paused_for_cache
@@ -1350,6 +1507,8 @@ class Window(Adw.ApplicationWindow):
                 self.set_buffering("This channel isn't responding", "It may be off air right now – try another channel.", None)
         else:
             self.time_lbl.set_label(f"{fmt_time(pos or 0)} / {fmt_time(dur)}")
+        if not self.live:
+            self._skip_tick(m, pos, dur, paused)
         try:
             key = (m.path, bool(m.video_params), bool(m.audio_params))
         except Exception:
@@ -1385,7 +1544,7 @@ class Window(Adw.ApplicationWindow):
             self._lang_done = True
             if self.settings.get("auto_english", True):
                 self._auto_language()
-        if self.pending_play is None and pos is not None:
+        if self.pending_play is None and pos is not None and not self.doctor.offline:
             if cache_wait:
                 st = self.current.handle.status() if self.current else None
                 rate = f"↓ {human_bytes(st.download_rate)}/s · {st.num_peers} peers" if st else ""
@@ -1393,6 +1552,373 @@ class Window(Adw.ApplicationWindow):
             else:
                 self.set_buffering(None, None, None)
         return True
+
+    # ── cast to a TV ─────────────────────────────────────────────────────
+    def _build_cast_popover(self, mb):
+        pop = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=10, margin_bottom=10,
+                      margin_start=10, margin_end=10)
+        box.set_size_request(280, -1)
+        box.append(Gtk.Label(label="Play on a TV", xalign=0, css_classes=["heading"]))
+        status = Gtk.Label(label="Looking for TVs on your network…", xalign=0, wrap=True,
+                           css_classes=["dim-label", "caption"])
+        box.append(status)
+        lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(lst)
+        if self.cast_dev:
+            stop = Gtk.Button(label=f"Stop casting to {self.cast_dev.name}", css_classes=["flat"])
+            stop.connect("clicked", lambda *_: (pop.popdown(), self.stop_casting(resume_here=True)))
+            box.append(stop)
+        pop.set_child(box)
+        mb.set_popover(pop)
+
+        def found(devs):
+            if not devs:
+                status.set_label("No TVs found. Make sure the TV is on and on the same Wi-Fi. "
+                                 "Chromecast, Google TV and DLNA smart TVs (Samsung, LG, Sony…) work."
+                                 + ("" if cast.chromecast_available() else
+                                    " Chromecast needs the pychromecast package."))
+                return False
+            status.set_label("Pick a TV:")
+            for d in devs:
+                b = Gtk.Button(css_classes=["flat"])
+                b.set_child(Gtk.Label(label=f"📺  {d.name}  ·  {d.kind}", xalign=0))
+                b.connect("clicked", lambda _b, d=d: (pop.popdown(), self.start_casting(d)))
+                lst.append(b)
+            return False
+        threading.Thread(target=lambda: GLib.idle_add(found, cast.discover(5)), daemon=True).start()
+
+    def _cast_source(self):
+        """-> (url, mime) the TV can fetch for what's playing, or (None, reason)."""
+        m = self.video.mpv
+        try:
+            path = m.path
+        except Exception:
+            path = None
+        if not path:
+            return None, "Nothing is playing"
+        if path.startswith(("http://", "https://")):
+            if "127.0.0.1" in path or "localhost" in path:
+                return None, "This video is being converted on this computer and can't be sent to a TV yet"
+            return path, ("application/x-mpegURL" if ".m3u8" in path else "video/mp4")
+        if os.path.isfile(path):
+            return cast.files.share(path), cast.mime_for(path)
+        return None, "This video can't be sent to a TV"
+
+    def _cast_do(self, fn, done=None):
+        def work():
+            try:
+                fn()
+                ok = None
+            except Exception as e:
+                ok = e
+                health.log.info("Cast: %s", e)
+            if done:
+                GLib.idle_add(done, ok)
+        threading.Thread(target=work, daemon=True).start()
+
+    def start_casting(self, dev):
+        url, mime = self._cast_source()
+        if not url:
+            self.toast(mime)
+            return
+        m = self.video.mpv
+        pos = m.time_pos or 0
+        title = self.p_title.get_label()
+        try:
+            vc = (m.video_codec or "").lower()
+        except Exception:
+            vc = ""
+        m.pause = True
+        if self.cast_dev and self.cast_dev is not dev:
+            old = self.cast_dev
+            self._cast_do(old.stop)
+        self.cast_dev = dev
+        self._cast_status = {"state": "BUFFERING", "pos": pos, "dur": m.duration}
+        self.cast_lbl.set_label(f"Playing on {dev.name}")
+        self.cast_sub.set_label("Starting on the TV…")
+        self.cast_box.set_visible(True)
+        self.buf_box.set_visible(False)
+        self.skip_btn.set_visible(False)
+        self.next_btn.set_visible(False)
+
+        def done(err):
+            if self.cast_dev is not dev:
+                return False
+            if err:
+                self.cast_dev = None
+                self.cast_box.set_visible(False)
+                self.toast(f"{dev.name} couldn't play this video")
+                return False
+            hint = ""
+            if vc and not any(k in vc for k in ("h264", "avc", "hevc", "h265", "vp9", "vp8", "av1")):
+                hint = " If the TV shows an error, it can't play this video format."
+            self.cast_sub.set_label("Use the controls here or the phone remote." + hint)
+            return False
+        self._cast_do(lambda: dev.play(url, title=title, mime=mime, start=pos), done)
+
+    def _cast_tick(self):
+        st = self._cast_status
+        if time.time() - self._cast_poll > 2:
+            self._cast_poll = time.time()
+            dev = self.cast_dev
+
+            def work():
+                try:
+                    s = dev.status()
+                except Exception:
+                    return
+                GLib.idle_add(lambda: (self.cast_dev is dev and self._cast_status.update(
+                    {k: v for k, v in s.items() if v is not None})) and False)
+            threading.Thread(target=work, daemon=True).start()
+        pos, dur = st.get("pos"), st.get("dur")
+        playing = st.get("state") in ("PLAYING", "BUFFERING")
+        if playing and pos is not None:
+            st["pos"] = pos + 0.25                      # tick between status polls
+        self.pp.set_icon_name("media-playback-pause-symbolic" if playing else "media-playback-start-symbolic")
+        if dur:
+            self.seek.set_range(0, dur)
+            self.seek.set_value(st.get("pos") or 0)
+        self.time_lbl.set_label(f"{fmt_time(st.get('pos') or 0)} / {fmt_time(dur)}")
+
+    def stop_casting(self, resume_here=True):
+        dev = self.cast_dev
+        if not dev:
+            return
+        pos = self._cast_status.get("pos")
+        self.cast_dev = None
+        self.cast_box.set_visible(False)
+        self._cast_do(dev.stop)
+        cast.files.stop()
+        if resume_here:
+            try:
+                if pos:
+                    self.video.mpv.seek(pos, "absolute")
+                self.video.mpv.pause = False
+            except Exception:
+                pass
+            self.toast(f"Stopped casting to {dev.name}")
+
+    # ── phone remote ─────────────────────────────────────────────────────
+    def show_remote(self):
+        try:
+            url = self.remote.start()
+            self._remote_state()
+        except Exception as e:
+            self.toast(f"Couldn't start the phone remote: {e}")
+            return
+        d = Adw.Dialog(title="Phone remote", content_width=420) if hasattr(Adw, "Dialog") else None
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=12, margin_bottom=24,
+                      margin_start=24, margin_end=24)
+        box.append(Gtk.Label(label="On your phone (on the same Wi-Fi), open this address in the browser:",
+                             wrap=True, justify=Gtk.Justification.CENTER))
+        tex = None
+        try:
+            tex = remote.qr_texture(url)
+        except Exception:
+            tex = None
+        if tex:
+            pic = Gtk.Picture.new_for_paintable(tex)
+            pic.set_size_request(220, 220)
+            pic.set_can_shrink(True)
+            box.append(pic)
+            box.append(Gtk.Label(label="…or scan this code with the phone's camera", css_classes=["dim-label"]))
+        lbl = Gtk.Label(label=url, selectable=True, wrap=True, css_classes=["title-3"],
+                        justify=Gtk.Justification.CENTER)
+        box.append(lbl)
+        copy = Gtk.Button(label="Copy address", css_classes=["pill"], halign=Gtk.Align.CENTER)
+        copy.connect("clicked", lambda *_: (self.get_clipboard().set(url), self.toast("Address copied")))
+        box.append(copy)
+        box.append(Gtk.Label(label="The address changes each time CineHaven starts, so only people who can see "
+                                   "this screen can use it. Tip: add it to the phone's home screen.",
+                             wrap=True, css_classes=["dim-label", "caption"], justify=Gtk.Justification.CENTER))
+        if d:
+            tv = Adw.ToolbarView()
+            tv.add_top_bar(Adw.HeaderBar())
+            tv.set_content(box)
+            d.set_child(tv)
+            d.present(self)
+        else:
+            w = Adw.Window(title="Phone remote", transient_for=self, modal=True, content=box)
+            w.present()
+
+    def _remote_state(self):
+        if self.root.get_visible_child_name() != "player":
+            self.remote.update(title="", where="Pick something to watch on the computer")
+            return
+        m = self.video.mpv
+        st = self._skip
+        try:
+            if self.cast_dev:
+                c = self._cast_status
+                pos, dur = c.get("pos"), c.get("dur")
+                paused = c.get("state") not in ("PLAYING", "BUFFERING")
+            else:
+                pos, dur, paused = m.time_pos, m.duration, m.pause
+            vol = self.vol.get_value()
+        except Exception:
+            return
+        seg = st.get("cur")
+        self.remote.update(
+            title=self.p_title.get_label(), paused=bool(paused), pos=pos, dur=dur, vol=vol, live=self.live,
+            where=f"Playing on {self.cast_dev.name}" if self.cast_dev else "Playing on the computer",
+            skip=skip.LABEL.get(seg[0]) if seg and not self.cast_dev else None,
+            next=bool(st.get("next")) and not self.cast_dev)
+
+    def _remote_command(self, c, v):
+        if self.root.get_visible_child_name() != "player":
+            return False
+        m = self.video.mpv
+        try:
+            if c == "toggle":
+                self.toggle_pause()
+            elif c == "back":
+                self.seek_rel(-10)
+            elif c == "fwd":
+                self.seek_rel(30)
+            elif c == "seek" and v is not None:
+                self._on_seek(None, None, float(v))
+            elif c == "vol" and v is not None:
+                self.vol.set_value(max(0, min(150, float(v))))
+            elif c == "skip":
+                self._do_skip(manual=True)
+            elif c == "next":
+                self._play_next()
+            elif c == "subs":
+                m.cycle("sub")
+            elif c == "audio":
+                m.cycle("audio")
+            elif c == "full":
+                self.toggle_fullscreen()
+            elif c == "stop":
+                self.leave_player()
+        except Exception as e:
+            health.log.info("Remote: %s failed: %s", c, e)
+        self._remote_state()
+        return False
+
+    # ── skip intro / credits, next episode ───────────────────────────────
+    def _skip_tick(self, m, pos, dur, paused):
+        st = self._skip
+        try:
+            path = m.path
+        except Exception:
+            path = None
+        if path != st["path"]:                        # a new video: find what can be skipped
+            self._skip = st = {"path": path, "segs": [], "done": set(), "next": None, "cd": None}
+            self.skip_btn.set_visible(False)
+            self.next_btn.set_visible(False)
+            if path and dur:
+                self._find_skips(path, m, dur)
+            elif path:
+                st["path"] = None                     # duration not known yet – try again next tick
+            return
+        if pos is None or not dur:
+            return
+        seg = next((sg for sg in st["segs"] if sg[1] <= pos < sg[2] - 1.5), None)
+        st["cur"] = seg
+        nxt = st["next"]
+        if seg and seg[0] == "credits" and nxt:
+            self.skip_btn.set_visible(False)
+            self._offer_next(pos, dur, paused)
+            return
+        if not seg and nxt and dur - pos < 25:        # no credits found: offer it in the last seconds
+            self._offer_next(pos, dur, paused)
+            return
+        if st["cd"] is not None:
+            st["cd"] = None
+            self.next_btn.set_visible(False)
+        if not seg:
+            self.skip_btn.set_visible(False)
+            return
+        key = (seg[0], round(seg[1]))
+        if (self._setting("auto_skip") and seg[0] in ("intro", "recap") and key not in st["done"]
+                and pos < seg[1] + 5 and not self.resume_box.get_visible()):
+            self._do_skip(manual=False)
+            return
+        self.skip_btn.set_label(f"{skip.LABEL[seg[0]]}  ⏭")
+        self.skip_btn.set_visible(True)
+
+    def _find_skips(self, path, m, dur):
+        try:
+            chapters = m.chapter_list
+        except Exception:
+            chapters = None
+        segs = skip.from_chapters(chapters, dur)
+        local = os.path.isfile(path)
+        nxt = skip.next_episode(path) if local else None
+        self._skip.update(segs=segs, next=nxt)
+        if local and skip.siblings(path) and not any(sg[0] in ("intro", "credits") for sg in segs):
+            def work():
+                found = skip.analyse(path)
+                GLib.idle_add(done, found)
+
+            def done(found):
+                if self._skip["path"] == path:
+                    have = {sg[0] for sg in self._skip["segs"]}
+                    self._skip["segs"] += [tuple(f) for f in found if f[0] not in have]
+                return False
+            threading.Thread(target=work, daemon=True).start()
+
+    def _do_skip(self, manual):
+        st = self._skip
+        seg = st.get("cur")
+        if not seg:
+            return
+        st["done"].add((seg[0], round(seg[1])))
+        self.skip_btn.set_visible(False)
+        if seg[0] == "credits" and st["next"]:
+            self._play_next()
+            return
+        try:
+            back = self.video.mpv.time_pos
+            self.video.mpv.seek(seg[2], "absolute+exact")
+        except Exception:
+            return
+        if not manual:
+            t = Adw.Toast(title=f"Skipped the {seg[0]}", timeout=5, button_label="Watch it")
+            t.connect("button-clicked", lambda *_: self.video.mpv.seek(max(seg[1], (back or seg[1]) - 1), "absolute"))
+            self.toasts.add_toast(t)
+
+    def _offer_next(self, pos, dur, paused):
+        st = self._skip
+        name = os.path.splitext(os.path.basename(st["next"]))[0]
+        if not self._setting("autoplay_next"):
+            self.next_btn.set_label("Next episode ▶")
+            self.next_btn.set_tooltip_text(name)
+            self.next_btn.set_visible(True)
+            return
+        if st["cd"] is None:
+            st["cd"] = time.time() + 10
+        if paused:
+            st["cd"] = time.time() + 10               # hold the countdown while paused
+        left = max(0, int(st["cd"] - time.time() + 0.99))
+        if left == 0 or dur - pos < 1.5:
+            self._play_next()
+            return
+        self.next_btn.set_label(f"Next episode in {left} s ▶")
+        self.next_btn.set_tooltip_text(name)
+        self.next_btn.set_visible(True)
+
+    def _play_next(self):
+        nxt = self._skip.get("next")
+        self.next_btn.set_visible(False)
+        if not nxt:
+            return
+        self._skip["next"] = None
+        title = self._episode_title(nxt)
+        self.play_local(nxt, title)
+
+    def _episode_title(self, path):
+        try:
+            from .localmedia import parse
+            info = parse(path)
+            t = info.get("title") or os.path.basename(path)
+            if info.get("season") is not None and info.get("episode") is not None:
+                t += f" · S{info['season']:02d}E{info['episode']:02d}"
+            return t
+        except Exception:
+            return os.path.basename(path)
 
     # ── periodic: torrents ───────────────────────────────────────────────
     def _tick(self):
@@ -1850,6 +2376,13 @@ class Window(Adw.ApplicationWindow):
         if getattr(self, "_cleaned", False):
             return
         self._cleaned = True
+        if self.cast_dev:
+            try:
+                self.cast_dev.stop()
+            except Exception:
+                pass
+        cast.files.stop()
+        self.remote.stop()
         self._remember_position()
         save_settings(self.settings)
         self._stop_translation()

@@ -1,9 +1,11 @@
 """Automatic recovery from playback and download problems."""
 import os
 import shutil
+import socket
 import subprocess
 import threading
 import time
+import urllib.parse
 
 import gi
 gi.require_version("Adw", "1")
@@ -14,6 +16,24 @@ from .health import SAFE_MODE, log  # noqa: E402
 
 END_ERROR = 4
 MAX_ATTEMPTS = 6
+PUBLIC = (("1.1.1.1", 443), ("8.8.8.8", 53), ("9.9.9.9", 443))
+
+
+def reachable(url=None, timeout=2.5):
+    """Is the internet (and the stream's own server) reachable right now?"""
+    targets = []
+    if url and url.startswith(("http://", "https://")):
+        u = urllib.parse.urlparse(url)
+        if u.hostname:
+            targets.append((u.hostname, u.port or (443 if u.scheme == "https" else 80)))
+    targets += [] if targets and targets[0][0] in ("127.0.0.1", "localhost") else list(PUBLIC)
+    for host, port in targets:
+        try:
+            socket.create_connection((host, port), timeout=timeout).close()
+            return True
+        except OSError:
+            continue
+    return False
 
 
 class PlaybackDoctor:
@@ -44,6 +64,11 @@ class PlaybackDoctor:
     def stop(self):
         self.src = None
 
+    @property
+    def offline(self):
+        """True while playback is on hold waiting for the internet to come back."""
+        return bool(self.src and self.src.get("offline"))
+
     def _on_event(self, ev):                     # mpv thread
         try:
             if ev.event_id.value == 7:           # MPV_EVENT_END_FILE
@@ -70,16 +95,104 @@ class PlaybackDoctor:
                 s["attempts"] = 0                # a minute of clean playback – forget old failures
             return
         if paused and not cache_wait:
+            m = self.win.video.mpv
+            try:
+                eof, dur = m.eof_reached, m.duration
+            except Exception:
+                eof, dur = False, None
+            if (eof and s["kind"] in ("url", "torrent") and dur and pos is not None and pos < dur - 60
+                    and now - s["started"] > 5):
+                self.heal("stream stopped early")      # the connection broke and the stream "ended"
+                return
             s["last_move"] = now
             return
+        if (s["kind"] != "local" and now - s["last_move"] > 8 and (cache_wait or pos is None or s["kind"] == "live")
+                and now - s.get("net_checked", 0) > 10):
+            s["net_checked"] = now               # stuck waiting for data: is the internet down?
+
+            def check():
+                if not reachable(s["url"] if s["kind"] != "torrent" else None):
+                    GLib.idle_add(lambda: self.src is s and not s["healing"] and self._wait_for_network("no data")
+                                  and False)
+            threading.Thread(target=check, daemon=True).start()
         limit = 45 if s["kind"] == "live" else (90 if cache_wait else 25)
         if pos is None:                           # never started
             limit = 60 if s["kind"] == "live" else (12 if s["kind"] == "local" else 75)
         if now - s["last_move"] > limit:
             self.heal("frozen" if pos is not None else "won't start")
 
-    # ── the ladder of fixes ─────────────────────────────────────────────
+    # ── lost connection: wait for it, then carry on from the same spot ──
     def heal(self, why):
+        s = self.src
+        if not s or s["healing"]:
+            return False
+        if s["kind"] == "local" and not s.get("orig", "") and os.path.isfile(s["url"]):
+            return self._ladder(why)
+        s["healing"] = True                      # hold the doctor while the network is checked
+
+        def check():
+            ok = reachable(s["url"] if s["kind"] != "torrent" else None)
+            GLib.idle_add(after, ok)
+
+        def after(ok):
+            if self.src is not s:
+                return False
+            s["healing"] = False
+            if ok:
+                self._ladder(why)
+            else:
+                self._wait_for_network(why)
+            return False
+        threading.Thread(target=check, daemon=True).start()
+        return False
+
+    def _wait_for_network(self, why):
+        s = self.src
+        s["healing"] = True
+        s["offline"] = True
+        pos = s["last_pos"]
+        log.warning("Network lost during %s (%s) – waiting to reconnect at %s", s["title"], why, pos)
+        win = self.win
+        win.set_buffering("Connection lost – reconnecting…",
+                          "The film will carry on from the same spot as soon as the internet is back.", None)
+        try:
+            win.video.mpv.pause = True
+        except Exception:
+            pass
+        started = time.time()
+
+        def poll():
+            while self.src is s:
+                if reachable(s["url"] if s["kind"] != "torrent" else None):
+                    GLib.idle_add(back)
+                    return
+                time.sleep(2)
+                waited = int(time.time() - started)
+                GLib.idle_add(lambda w=waited: self.src is s and win.set_buffering(
+                    "Connection lost – reconnecting…",
+                    f"Waiting for the internet ({w // 60}:{w % 60:02d}). The film will carry on from the "
+                    "same spot as soon as it's back.", None) and False)
+
+        def back():
+            if self.src is not s:
+                return False
+            log.info("Network back after %d s – resuming %s at %s", time.time() - started, s["title"], pos)
+            win.toast("Reconnected – carrying on")
+            s["healing"] = False
+            s["offline"] = False
+            if s["kind"] == "torrent" and s.get("item") is not None:
+                try:
+                    s["item"].handle.force_reannounce()
+                    s["item"].handle.force_dht_announce()
+                except Exception:
+                    pass
+            self._reload(None if s["kind"] == "live" else pos, "Reconnected")
+            return False
+        threading.Thread(target=poll, daemon=True).start()
+        return False
+
+    # ── the ladder of fixes ─────────────────────────────────────────────
+    def _ladder(self, why):
         s = self.src
         if not s or s["healing"]:
             return False

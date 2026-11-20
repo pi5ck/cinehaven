@@ -83,7 +83,10 @@ jobs:
           cp lt-install/bin/*.dll /ucrt64/bin/ 2>/dev/null || true
           python -c "import libtorrent; print('libtorrent', libtorrent.__version__)"
       - name: Install python-mpv
-        run: pip install --break-system-packages python-mpv
+        run: |
+          pip install --break-system-packages python-mpv
+          # optional: Chromecast support (casting to DLNA TVs needs nothing extra)
+          pip install --break-system-packages pychromecast || echo "pychromecast unavailable – Chromecast casting off"
       - name: Smoke test
         run: python packaging/smoke_test.py
       - name: Build the self-contained bundle
@@ -123,6 +126,7 @@ jobs:
           PY=$(brew --prefix)/bin/python3
           echo "PY=$PY" >> $GITHUB_ENV
           $PY -m pip install --break-system-packages python-mpv
+          $PY -m pip install --break-system-packages pychromecast || echo "pychromecast unavailable"
           $PY -c "import libtorrent; print('libtorrent', libtorrent.__version__)"
       - name: Smoke test
         env:

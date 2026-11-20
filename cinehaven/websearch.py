@@ -25,6 +25,34 @@ def _relevant(query, titles):
     return good
 
 
+def with_offers(t, countries):
+    """t + services {label: (url, flags)} + free, across the user's countries and the library services."""
+    services, free = {}, False
+    for c in countries:
+        try:
+            offs = watch.offers(t["id"], c)
+        except Exception:
+            continue
+        for o in offs:
+            free = free or o["kind"] in FREE_KINDS
+            label = f"{o['service']} · {'Free' if o['kind'] in FREE_KINDS else o['label']}"
+            u, flags = services.get(label, (o["url"], ""))
+            services[label] = (u, flags + FLAG[c])
+    try:
+        for o in watch.library_offers(t["id"]):
+            services[f"📚 {o['service']} · Free"] = (
+                o["url"], "".join(FLAG.get(c, c) for c in o["countries"]))
+            free = True
+    except Exception:
+        pass
+    order = lambda kv: (0 if "· Free" in kv[0] else 1, kv[0])  # noqa: E731
+    if not services:      # not offered here right now – still show it, with a search link
+        q = urllib.parse.quote(t["title"])
+        services = {"Not streaming here right now – find it": (
+            f"https://www.justwatch.com/{countries[0].lower()}/search?q={q}", "")}
+    return dict(t, services=dict(sorted(services.items(), key=order)), free=free)
+
+
 def _streaming(query, countries, limit=8):
     titles = {}
     # the user's countries first, then big catalogues to identify films not offered locally
@@ -38,34 +66,8 @@ def _streaming(query, countries, limit=8):
             break
     titles = list(titles.values())[:limit]
 
-    def with_offers(t):
-        services, free = {}, False
-        for c in countries:
-            try:
-                offs = watch.offers(t["id"], c)
-            except Exception:
-                continue
-            for o in offs:
-                free = free or o["kind"] in FREE_KINDS
-                label = f"{o['service']} · {'Free' if o['kind'] in FREE_KINDS else o['label']}"
-                u, flags = services.get(label, (o["url"], ""))
-                services[label] = (u, flags + FLAG[c])
-        try:
-            for o in watch.library_offers(t["id"]):
-                services[f"📚 {o['service']} · Free"] = (
-                    o["url"], "".join(FLAG.get(c, c) for c in o["countries"]))
-                free = True
-        except Exception:
-            pass
-        order = lambda kv: (0 if "· Free" in kv[0] else 1, kv[0])  # noqa: E731
-        if not services:      # not offered here right now – still show it, with a search link
-            q = urllib.parse.quote(t["title"])
-            services = {"Not streaming here right now – find it": (
-                f"https://www.justwatch.com/{countries[0].lower()}/search?q={q}", "")}
-        return dict(t, services=dict(sorted(services.items(), key=order)), free=free)
-
     with ThreadPoolExecutor(max_workers=6) as pool:
-        res = list(pool.map(with_offers, titles))
+        res = list(pool.map(lambda t: with_offers(t, countries), titles))
     res.sort(key=lambda t: not t["free"])
     return res
 
