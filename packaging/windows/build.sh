@@ -12,8 +12,8 @@ rm -rf "$OUT"; mkdir -p "$OUT"/{bin,lib,share/icons,share/glib-2.0,app}
 echo "==> Python $PYVER"
 cp "$PREFIX/bin/python.exe" "$PREFIX/bin/pythonw.exe" "$OUT/bin/"
 cp -r "$PREFIX/lib/python$PYVER" "$OUT/lib/"
-( cd "$OUT/lib/python$PYVER" && rm -rf test idlelib tkinter turtledemo ensurepip lib2to3 \
-    site-packages/pip* site-packages/setuptools* && find . -name __pycache__ -prune -exec rm -rf {} + )
+( cd "$OUT/lib/python$PYVER" && rm -rf test idlelib tkinter turtledemo lib2to3 \
+    && find . -name __pycache__ -prune -exec rm -rf {} + )
 
 echo "==> GTK runtime data"
 cp -r "$PREFIX/lib/girepository-1.0" "$PREFIX/lib/gdk-pixbuf-2.0" "$OUT/lib/"

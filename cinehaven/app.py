@@ -13,7 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import catalog, enhance, fixvideo, health, safety, translate, websearch  # noqa: E402
+from . import ai, catalog, enhance, fixvideo, health, safety, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
@@ -853,6 +853,7 @@ class Window(Adw.ApplicationWindow):
         return True
 
     def _play_now(self, it):
+        self._stop_ai_subs()
         self.pending_play = None
         self._remember_position()
         self.resume_key = f"item:{it.key}"
@@ -892,6 +893,7 @@ class Window(Adw.ApplicationWindow):
         self._show_controls()
 
     def leave_player(self):
+        self._stop_ai_subs()
         self.doctor.stop()
         self._remember_position()
         self._hide_resume()
@@ -970,6 +972,11 @@ class Window(Adw.ApplicationWindow):
                         opts.insert(1, (("tr", t["id"]), f"English – translated from {name}"))
                 if self.tr_track is not None:
                     cur = ("tr", self.tr_track)
+                if self._ai_media():
+                    opts.append((("ai", "translate"), "✨ AI subtitles – English (any language)"))
+                    opts.append((("ai", "transcribe"), "✨ AI subtitles – language spoken"))
+                    if getattr(self, "_ai", None):
+                        cur = ("ai", self._ai.task)
             for val, name in opts:
                 active = cur == val or (val is False and not cur)
                 cb = Gtk.CheckButton(label=name, group=group, active=active)
@@ -1061,11 +1068,112 @@ class Window(Adw.ApplicationWindow):
 
     def _select_track(self, prop, val):
         if prop == "sid":
+            if isinstance(val, tuple) and val[0] == "ai":
+                self._stop_translation()
+                self._start_ai_subs(val[1])
+                return
+            self._stop_ai_subs()
             if isinstance(val, tuple):
                 self._start_translation(val[1])
                 return
             self._stop_translation()
         setattr(self.video.mpv, prop, val)
+
+    # ── AI subtitles (Whisper, on this computer) ─────────────────────────
+    def _ai_media(self):
+        """The file or web address AI subtitles can read for what's playing (None for live TV / partial torrents)."""
+        if self.live:
+            return None
+        if self.local_path and os.path.isfile(self.local_path):
+            return self.local_path
+        try:
+            p = self.video.mpv.path or ""
+        except Exception:
+            return None
+        if os.path.isfile(p) or (p.startswith("http") and "archive.org" in p):
+            return p
+        return None
+
+    def _start_ai_subs(self, task):
+        media = self._ai_media()
+        if not media:
+            self.toast("AI subtitles need a finished video file")
+            return
+        if not ai.ready():
+            dlg = Adw.AlertDialog(
+                heading="Download the AI subtitle pack?",
+                body=("CineHaven listens to the film and writes subtitles itself, using OpenAI's Whisper "
+                      f"speech recognition running on this computer – nothing is uploaded. The pack is {ai.PACK_SIZE} "
+                      "and is downloaded once. It can also translate any language into English."))
+            dlg.add_response("cancel", "Not now")
+            dlg.add_response("go", "Download")
+            dlg.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
+
+            def resp(_d, r):
+                if r != "go":
+                    return
+                self.toast("Downloading the AI subtitle pack – you can keep watching")
+
+                def work():
+                    try:
+                        ai.install(lambda t: GLib.idle_add(self.toast, t))
+                        GLib.idle_add(self._start_ai_subs, task)
+                    except Exception as e:
+                        health.log.error("AI pack install failed: %s", e)
+                        GLib.idle_add(self.toast, "Couldn't install the AI subtitle pack – see Help & diagnostics")
+                threading.Thread(target=work, daemon=True).start()
+            dlg.connect("response", resp)
+            dlg.present(self)
+            return False
+        self._stop_ai_subs()
+        m = self.video.mpv
+        pos = m.time_pos or 0
+        self._ai_sid = None
+        self._ai_done_to = pos
+        media_now = media
+
+        def update(path, info):
+            GLib.idle_add(self._ai_update, media_now, path, info)
+
+        def done(path, ok):
+            GLib.idle_add(self._ai_finished, media_now, ok)
+        self._ai = ai.Subtitler(media, pos, task, update, done)
+        self._ai_media_now = media
+        self.toast("✨ Writing subtitles – they'll appear in a few seconds")
+        return False
+
+    def _ai_update(self, media, path, info):
+        if not getattr(self, "_ai", None) or self._ai.media != media:
+            return False
+        m = self.video.mpv
+        self._ai_done_to = info.get("done_to", self._ai_done_to)
+        if not info.get("cached") and not info.get("lines"):
+            return False                         # nothing said yet – mpv can't load an empty file
+        try:
+            if self._ai_sid is None:
+                m.command("sub-add", path, "select", "AI subtitles")
+                tid = next((t["id"] for t in (m.track_list or []) if t.get("type") == "sub"
+                            and t.get("external-filename") == path), None)
+                self._ai_sid = tid
+                if info.get("lang") and info["lang"] != "en" and self._ai.task == "translate":
+                    self.toast(f"✨ Translating from {info['lang']} to English")
+            else:
+                m.command("sub-reload", self._ai_sid)
+                m.sid = self._ai_sid
+        except Exception as e:
+            health.log.warning("Couldn't load AI subtitles: %s", e)
+        return False
+
+    def _ai_finished(self, media, ok):
+        if getattr(self, "_ai", None) and self._ai.media == media and not ok:
+            health.log.info("AI subtitles stopped before the end")
+        return False
+
+    def _stop_ai_subs(self):
+        if getattr(self, "_ai", None):
+            self._ai.stop()
+        self._ai = None
+        self._ai_sid = None
 
     # ── English audio / subtitles / live translation ─────────────────────
     def _auto_language(self):
@@ -1260,6 +1368,19 @@ class Window(Adw.ApplicationWindow):
                     if gone:
                         health.log.info("Enhance picture: dropped %d frames in 10 s – turned off %s", d, gone)
                         self.toast(f"Turned off {gone} to keep playback smooth on this computer")
+        a = getattr(self, "_ai", None)
+        reported = a is not None and self._ai_done_to > a.start_at       # worker has finished a piece
+        if a and pos is not None and not os.path.exists(a.out + ".done") and (
+                pos < a.start_at - 5                                       # jumped back before it
+                or (reported and pos > self._ai_done_to + 20)              # jumped ahead of what's written
+                or (not reported and pos > a.start_at + 90)):              # jumped far before the first piece
+            task = a.task
+            self._ai_done_to = pos
+            sid = self._ai_sid
+            a.stop()
+            self._ai = ai.Subtitler(a.media, pos, task, lambda p, i, md=a.media: GLib.idle_add(self._ai_update, md, p, i),
+                                    lambda p, ok, md=a.media: GLib.idle_add(self._ai_finished, md, ok))
+            self._ai_sid = sid
         if pos is not None and not self._lang_done and pos > 0.5:
             self._lang_done = True
             if self.settings.get("auto_english", True):
@@ -1514,6 +1635,7 @@ class Window(Adw.ApplicationWindow):
                    lambda p: self.video.mpv.command("sub-add", p, "select"))
 
     def play_local(self, path, title=None):
+        self._stop_ai_subs()
         self._remember_position()
         self.enter_player(title or os.path.basename(path), None)
         self.set_buffering(None, None, None)

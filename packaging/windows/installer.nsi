@@ -18,14 +18,19 @@ UninstallIcon "${SRCDIR}\CineHaven.ico"
 !include "MUI2.nsh"
 !define MUI_ICON "${SRCDIR}\CineHaven.ico"
 !define MUI_UNICON "${SRCDIR}\CineHaven.ico"
-!define MUI_FINISHPAGE_RUN "$INSTDIR\bin\pythonw.exe"
-!define MUI_FINISHPAGE_RUN_PARAMETERS '"$INSTDIR\app\cinehaven-launcher"'
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_TEXT "Start CineHaven"
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchCineHaven
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
+
+Function LaunchCineHaven
+  Exec '"$INSTDIR\bin\pythonw.exe" "$INSTDIR\app\cinehaven-launcher"'
+FunctionEnd
 
 Section "Install"
   SetOutPath "$INSTDIR"
