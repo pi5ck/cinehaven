@@ -28,6 +28,7 @@ BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
          catalog.UNVERIFIED: ("⚠ Unverified", "warning")}
 
 CSS = b"""
+.nudge { min-width: 0; padding-left: 8px; padding-right: 8px; font-weight: bold; }
 .skip-btn { font-weight: bold; font-size: 1.1em; padding: 10px 22px; }
 .poster { border-radius: 10px; background: alpha(currentColor, .08); }
 .movie-card { padding: 6px; border-radius: 14px; }
@@ -417,6 +418,12 @@ class Window(Adw.ApplicationWindow):
             b = Gtk.Button(icon_name=icon, tooltip_text=tip, css_classes=["flat", "circular"])
             b.connect("clicked", lambda _b, s=secs: self.seek_rel(s))
             row.append(b)
+        # inch backwards / forwards
+        for label, secs, tip in (("‹ 1s", -1, "Back 1 second (Shift+←) · Ctrl+← = 5 s · “,” = one frame when paused"),
+                                 ("1s ›", 1, "Forward 1 second (Shift+→) · Ctrl+→ = 5 s · “.” = one frame when paused")):
+            b = Gtk.Button(label=label, tooltip_text=tip, css_classes=["flat", "nudge"])
+            b.connect("clicked", lambda _b, s=secs: self.nudge(s))
+            row.append(b)
         self.time_lbl = Gtk.Label(label="0:00 / --:--", css_classes=["numeric", "caption"], margin_start=6)
         row.append(self.time_lbl)
         self.dl_lbl = Gtk.Label(hexpand=True, xalign=1, css_classes=["dim-label", "caption", "numeric"], margin_end=6)
@@ -425,6 +432,10 @@ class Window(Adw.ApplicationWindow):
                                                     "audio-volume-low-symbolic", "audio-volume-medium-symbolic"])
         self.vol.set_value(self.settings.get("volume", 100))
         self.vol.connect("value-changed", self._on_volume)
+        for label, step, tip in (("−", -1, "Volume down 1% (Shift+↓)"), ("+", 1, "Volume up 1% (Shift+↑)")):
+            b = Gtk.Button(label=label, tooltip_text=tip, css_classes=["flat", "circular", "nudge"])
+            b.connect("clicked", lambda _b, st=step: self.nudge_volume(st))
+            row.append(b)
         row.append(self.vol)
         tracks = Gtk.MenuButton(label="CC", tooltip_text="Subtitles & audio tracks",
                                 css_classes=["flat"], direction=Gtk.ArrowType.UP)
@@ -508,8 +519,8 @@ class Window(Adw.ApplicationWindow):
         click = Gtk.GestureClick()
         click.connect("pressed", self._on_click)
         self.video.add_controller(click)
-        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
-        scroll.connect("scroll", lambda c, dx, dy: (self.vol.set_value(self.vol.get_value() - dy * 5), True)[1])
+        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES)
+        scroll.connect("scroll", self._on_video_scroll)
         self.video.add_controller(scroll)
         self._last_motion = (0, 0)
         return ov
@@ -1069,13 +1080,59 @@ class Window(Adw.ApplicationWindow):
             pass
         self._show_controls()
 
+    # ── inching: small, exact steps ──────────────────────────────────────
+    def _osd(self, text):
+        try:
+            self.video.mpv.show_text(text, 900)
+        except Exception:
+            pass
+
+    def nudge(self, secs):
+        """Move a little backwards or forwards – exactly, not to the nearest keyframe."""
+        if self.cast_dev:
+            self.seek_rel(secs)
+            return
+        m = self.video.mpv
+        try:
+            m.seek(secs, "relative", "exact")
+            pos = max(0, (m.time_pos or 0) + secs)
+            self._osd(f"{'⏪' if secs < 0 else '⏩'} {abs(secs):g} s  ·  {fmt_time(pos)}")
+        except Exception:
+            pass
+        self._show_controls()
+
+    def frame_step(self, direction):
+        """One frame at a time (pauses the film)."""
+        if self.cast_dev:
+            return
+        m = self.video.mpv
+        try:
+            m.command("frame-step" if direction > 0 else "frame-back-step")
+            self._osd(f"{'◀' if direction < 0 else '▶'} 1 frame  ·  {fmt_time(m.time_pos or 0)}")
+        except Exception:
+            pass
+        self._show_controls()
+
+    def nudge_volume(self, step):
+        v = max(0, min(150, round(self.vol.get_value()) + step))
+        self.vol.set_value(v)
+        self._osd(f"🔊 Volume {v:g}%")
+        self._show_controls()
+
+    def _on_video_scroll(self, _c, dx, dy):
+        if dy:
+            self.nudge_volume(-2 if dy > 0 else 2)
+        elif dx:
+            self.nudge(1 if dx > 0 else -1)
+        return True
+
     def _on_seek(self, _scale, _scroll, value):
         if self.cast_dev:
             self._cast_status["pos"] = max(0, value)
             self._cast_do(lambda: self.cast_dev.seek(max(0, value)))
             return False
         try:
-            self.video.mpv.seek(max(0, value), "absolute")
+            self.video.mpv.seek(max(0, value), "absolute", "default-precise")
         except Exception:
             pass
         return False
@@ -1442,6 +1499,8 @@ class Window(Adw.ApplicationWindow):
             return False
         k = Gdk.keyval_name(keyval)
         m = self.video.mpv
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         if self.resume_box.get_visible():
             if k in ("space", "Return", "KP_Enter", "k", "p"):
                 self._resume_choice(True)
@@ -1452,10 +1511,12 @@ class Window(Adw.ApplicationWindow):
         acts = {
             "space": self.toggle_pause, "k": self.toggle_pause, "p": self.toggle_pause,
             "f": self.toggle_fullscreen, "F11": self.toggle_fullscreen,
-            "Left": lambda: self.seek_rel(-10), "Right": lambda: self.seek_rel(30),
+            "Left": lambda: self.nudge(-1) if shift else self.nudge(-5) if ctrl else self.seek_rel(-10),
+            "Right": lambda: self.nudge(1) if shift else self.nudge(5) if ctrl else self.seek_rel(30),
+            "comma": lambda: self.frame_step(-1), "period": lambda: self.frame_step(1),
             "j": lambda: self.seek_rel(-10), "l": lambda: self.seek_rel(10),
-            "Up": lambda: self.vol.set_value(self.vol.get_value() + 5),
-            "Down": lambda: self.vol.set_value(self.vol.get_value() - 5),
+            "Up": lambda: self.nudge_volume(1 if shift else 5),
+            "Down": lambda: self.nudge_volume(-1 if shift else -5),
             "m": lambda: setattr(m, "mute", not m.mute),
             "s": lambda: m.cycle("sub"), "v": lambda: m.cycle("sub"),
             "a": lambda: m.cycle("audio"), "b": lambda: m.cycle("audio"),
@@ -1693,7 +1754,7 @@ class Window(Adw.ApplicationWindow):
         if resume_here:
             try:
                 if pos:
-                    self.video.mpv.seek(pos, "absolute")
+                    self.video.mpv.seek(pos, "absolute", "default-precise")
                 self.video.mpv.pause = False
             except Exception:
                 pass
@@ -1776,6 +1837,10 @@ class Window(Adw.ApplicationWindow):
                 self.seek_rel(-10)
             elif c == "fwd":
                 self.seek_rel(30)
+            elif c == "inch" and v is not None:
+                self.nudge(max(-10, min(10, float(v))))
+            elif c == "volstep" and v is not None:
+                self.nudge_volume(max(-10, min(10, int(v))))
             elif c == "seek" and v is not None:
                 self._on_seek(None, None, float(v))
             elif c == "vol" and v is not None:
@@ -1872,12 +1937,12 @@ class Window(Adw.ApplicationWindow):
             return
         try:
             back = self.video.mpv.time_pos
-            self.video.mpv.seek(seg[2], "absolute+exact")
+            self.video.mpv.seek(seg[2], "absolute", "exact")
         except Exception:
             return
         if not manual:
             t = Adw.Toast(title=f"Skipped the {seg[0]}", timeout=5, button_label="Watch it")
-            t.connect("button-clicked", lambda *_: self.video.mpv.seek(max(seg[1], (back or seg[1]) - 1), "absolute"))
+            t.connect("button-clicked", lambda *_: self.video.mpv.seek(max(seg[1], (back or seg[1]) - 1), "absolute", "exact"))
             self.toasts.add_toast(t)
 
     def _offer_next(self, pos, dur, paused):
@@ -2247,7 +2312,7 @@ class Window(Adw.ApplicationWindow):
             self.settings.get("resume", {}).pop(self.resume_key, None)
             save_settings(self.settings)
             try:
-                m.seek(0, "absolute")
+                m.seek(0, "absolute", "default-precise")
             except Exception:
                 m.command("loadfile", m.path or "", "replace")
             self.toast("Starting from the beginning")

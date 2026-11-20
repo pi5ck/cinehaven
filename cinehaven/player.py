@@ -87,7 +87,7 @@ class VideoView(Gtk.GLArea):
             cache="yes", demuxer_max_bytes="400MiB", demuxer_max_back_bytes="100MiB", demuxer_readahead_secs=120,
             stream_lavf_o="reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=15",
             network_timeout=30, sub_auto="fuzzy", slang="en,eng", alang="en,eng",
-            ytdl=False, osd_level=1, osd_font_size=38, volume=100, volume_max=150,
+            ytdl=False, osd_level=1, osd_font_size=38, osd_margin_y=90, osd_margin_x=40, volume=100, volume_max=150,
             user_agent="CineHaven")
         self.ctx = None
         self._proc_fn = mpv.MpvGlGetProcAddressFn(_get_proc)

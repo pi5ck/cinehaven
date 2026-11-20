@@ -47,8 +47,9 @@ button:active{transform:scale(.96);opacity:.8}
   <div class="times"><span id="pos">0:00</span><span id="dur">--:--</span></div>
  </div>
  <div class="row"><button data-c="back">⏪ 10</button><button id="pp" data-c="toggle">⏯</button><button data-c="fwd">30 ⏩</button></div>
+ <div class="row" style="margin-top:10px"><button data-c="inch" data-v="-5">‹ 5s</button><button data-c="inch" data-v="-1">‹ 1s</button><button data-c="inch" data-v="1">1s ›</button><button data-c="inch" data-v="5">5s ›</button></div>
  <div class="row" style="margin-top:10px"><button id="skip" data-c="skip">Skip intro ⏭</button><button id="next" data-c="next">Next episode ▶</button></div>
- <div class="card"><div class="row"><span>🔈</span><input id="vol" type="range" min="0" max="150" step="5"><span>🔊</span></div></div>
+ <div class="card"><div class="row"><button data-c="volstep" data-v="-1" style="flex:0 0 58px">−</button><input id="vol" type="range" min="0" max="150" step="1"><button data-c="volstep" data-v="1" style="flex:0 0 58px">+</button></div><div id="volnum" style="text-align:center;color:var(--dim);font-size:13px"></div></div>
  <div class="row extra"><button data-c="subs">Subtitles</button><button data-c="audio">Audio</button><button data-c="full">Full screen</button></div>
  <div class="row extra" style="margin-top:10px"><button data-c="stop">⏹ Stop</button></div>
 </div>
@@ -59,7 +60,7 @@ const $=id=>document.getElementById(id);
 const fmt=t=>{if(t==null||isNaN(t))return'--:--';t=Math.floor(t);const h=Math.floor(t/3600),m=Math.floor(t/60)%60,s=t%60;
  return(h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s).padStart(2,'0')};
 function cmd(c,v){fetch('/'+K+'/cmd',{method:'POST',body:JSON.stringify({c:c,v:v})}).then(poll);if(navigator.vibrate)navigator.vibrate(15)}
-document.querySelectorAll('button[data-c]').forEach(b=>b.onclick=()=>cmd(b.dataset.c));
+document.querySelectorAll('button[data-c]').forEach(b=>b.onclick=()=>cmd(b.dataset.c,b.dataset.v!==undefined?+b.dataset.v:undefined));
 $('seek').oninput=()=>{drag=true;$('pos').textContent=fmt(+$('seek').value)};
 $('seek').onchange=()=>{cmd('seek',+$('seek').value);drag=false};
 $('vol').oninput=()=>{vdrag=true};$('vol').onchange=()=>{cmd('vol',+$('vol').value);vdrag=false};
@@ -69,7 +70,7 @@ function poll(){fetch('/'+K+'/state',{cache:'no-store'}).then(r=>r.json()).then(
  $('pp').textContent=s.paused?'▶':'⏸';
  if(!drag){$('seek').max=Math.max(1,Math.floor(s.dur||1));$('seek').value=Math.floor(s.pos||0);
   $('pos').textContent=fmt(s.pos);$('dur').textContent=s.live?'LIVE':fmt(s.dur)}
- if(!vdrag&&s.vol!=null)$('vol').value=s.vol;
+ if(!vdrag&&s.vol!=null){$('vol').value=s.vol;$('volnum').textContent='Volume '+Math.round(s.vol)+'%'}
  $('skip').style.display=s.skip?'block':'none';if(s.skip)$('skip').textContent=s.skip+' ⏭';
  $('next').style.display=s.next?'block':'none';
 }).catch(()=>{$('on').style.display='none';$('off').style.display='block'})}
@@ -131,7 +132,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class Remote:
-    COMMANDS = {"toggle", "back", "fwd", "seek", "vol", "skip", "next", "subs", "audio", "full", "stop"}
+    COMMANDS = {"toggle", "back", "fwd", "inch", "volstep", "seek", "vol", "skip", "next", "subs", "audio", "full", "stop"}
 
     def __init__(self, on_command):
         """on_command(c, v) is called from a server thread – the caller moves it to the GTK thread."""
