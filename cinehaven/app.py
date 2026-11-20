@@ -20,6 +20,7 @@ from .player import VideoView  # noqa: E402
 from .mylist import CSS as MYLIST_CSS, MyListPage, StreamCard, streaming_docs  # noqa: E402
 from .livetv_ui import CSS as LIVE_CSS, LiveTVPage  # noqa: E402
 from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
+from .youtube_ui import CSS as YT_CSS, YouTubePage  # noqa: E402
 
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
@@ -215,6 +216,13 @@ class Window(Adw.ApplicationWindow):
         else:
             self.run_search("")
 
+    def _on_view_changed(self, views, _p):
+        name = views.get_visible_child_name()
+        if name == "live":
+            self.livetv.on_shown()
+        elif name == "youtube":
+            self.youtube.on_shown()
+
     # ── browse UI ─────────────────────────────────────────────────────────
     def _build_browse(self):
         tv = Adw.ToolbarView()
@@ -316,8 +324,10 @@ class Window(Adw.ApplicationWindow):
         # Live TV – free channels, health-checked
         self.livetv = LiveTVPage(self)
         self.views.add_titled_with_icon(self.livetv, "live", "Live TV", "video-display-symbolic")
-        self.views.connect("notify::visible-child-name",
-                           lambda v, _p: v.get_visible_child_name() == "live" and self.livetv.on_shown())
+        # YouTube – free full movies posted by official studio channels
+        self.youtube = YouTubePage(self)
+        self.views.add_titled_with_icon(self.youtube, "youtube", "YouTube", "media-playback-start-symbolic")
+        self.views.connect("notify::visible-child-name", self._on_view_changed)
 
         # My List – where to watch legally (South Africa / UAE)
         self.mylist = MyListPage(self)
@@ -1605,7 +1615,7 @@ class App(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS
+        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS
         css.load_from_data(data, len(data))
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
