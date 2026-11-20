@@ -21,6 +21,13 @@ CineHaven is a movie streamer and player for Linux, with Windows, macOS and BSD 
 * **YouTube:** free full-length movies posted by official studio and distributor channels (FilmRise, Popcornflix, Paramount Movies, Movie Central, Maverick Movies), with a Heartfelt section for family and love dramas. Save your own finds by pasting a YouTube link; films from channels that aren't known rights holders are marked Unverified. Films play on youtube.com in your browser.
 * **My List – where to watch legally:** search any movie or TV series (including new releases) and add it to your list. For each film it shows where it can be watched in **South Africa** and the **UAE**: free, included in a subscription (Netflix, Apple TV, Prime Video…) or rent/buy with prices. Click a service to open it. A **📚 Library card** line shows films that are free on **Kanopy** or **Hoopla**, with flags for the countries where they're offered. You need a card from a participating public library (mainly in the US and Canada, plus some in the UK, Australia and New Zealand). Availability data comes from JustWatch and is re-checked every 12 hours.
 * **Library – save and play many movies:** up to 6 movies download at the same time, and you can watch any of them while the rest keep downloading. Pause, resume or remove downloads, or open the folder. Finished movies play straight from disk. Files are saved in `~/Videos/CineHaven`.
+* **✨ AI subtitles for any video:** in the **CC** menu, *AI subtitles* has speech recognition (Whisper) running on your computer write subtitles for videos that have none, in the spoken language or translated to English. The speech engine downloads once (about 1 GB), and nothing is uploaded.
+* **Picture and sound** (**CC** menu): *Enhance picture* upscales and sharpens older or low-resolution films and reduces noise. It eases off by itself if the computer can't keep up. *Dialogue boost* makes voices clearer, and *Night mode* evens out sudden loud bangs.
+* **✨ Suggest films:** describe what you feel like watching ("a quiet, heartfelt film about a father and son") and press *Suggest films*. AI running on your own computer ([Ollama](https://ollama.com) with `nomic-embed-text` and `qwen2.5:3b`) picks real, well-rated films whose stories match and shows where to watch them. Your description never leaves the computer.
+* **Skip intro and credits:** TV episodes on your computer skip their intro and recap automatically (*Watch it* undoes a skip). CineHaven finds them from chapter names or by matching the theme tune's audio across episodes. When the credits roll, the next episode starts after a 10-second countdown. Both can be turned off in the **CC** menu.
+* **Cast to a TV:** the TV button in the player sends what you're watching to a Chromecast, Google TV or DLNA smart TV (Samsung, LG, Sony, Philips…) and keeps the controls on your computer. Chromecast needs the `pychromecast` Python package; DLNA needs nothing extra.
+* **Phone remote:** *Menu → Phone remote* (or the phone button in the player) shows an address to open on your phone for big play/pause, seek, volume, skip intro and next episode buttons. The address changes every time CineHaven starts.
+* **Keeps playing when the internet drops:** a large read-ahead buffer covers short dropouts. During longer ones CineHaven shows *Connection lost – reconnecting…*, waits for the connection to come back and carries on from the same spot.
 * **Open anything:** use **+** to paste a magnet link, open a `.torrent` or play a local video. You can also drag and drop files onto the window.
 
 ## Fixes itself
@@ -44,8 +51,8 @@ CineHaven is a movie streamer and player for Linux, with Windows, macOS and BSD 
 **Ubuntu 24.04+ / Debian 13+ / Linux Mint 22+** (recommended – keeps itself up to date):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.3.tar.gz
-tar xzf cinehaven-1.0.3.tar.gz && cd cinehaven-1.0.3
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.5.tar.gz
+tar xzf cinehaven-1.0.5.tar.gz && cd cinehaven-1.0.5
 ./install.sh
 ```
 
@@ -54,8 +61,8 @@ The installer asks for your password once to add the system libraries (GTK, libt
 **Or use the .deb package** (Ubuntu/Debian):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.3_all.deb
-sudo apt install ./cinehaven_1.0.3_all.deb
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.5_all.deb
+sudo apt install ./cinehaven_1.0.5_all.deb
 ```
 
 The .deb version tells you when an update is out, but you install the update yourself. The install.sh version updates itself.
