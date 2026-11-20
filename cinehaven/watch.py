@@ -16,7 +16,11 @@ IMG = "https://images.justwatch.com"
 CACHE_FILE = os.path.join(DATA_DIR, "watch_cache.json")
 CACHE_TTL = 12 * 3600
 
-COUNTRIES = {"ZA": "South Africa", "AE": "UAE"}
+COUNTRIES = {"ZA": "South Africa", "AE": "UAE", "US": "United States", "GB": "United Kingdom",
+             "CA": "Canada", "AU": "Australia", "NZ": "New Zealand", "IE": "Ireland", "IN": "India",
+             "NG": "Nigeria", "KE": "Kenya", "SA": "Saudi Arabia", "EG": "Egypt", "DE": "Germany",
+             "FR": "France", "NL": "Netherlands", "ES": "Spain", "IT": "Italy", "BR": "Brazil",
+             "MX": "Mexico", "PH": "Philippines", "SG": "Singapore", "MY": "Malaysia"}
 KIND_LABEL = {"FREE": "Free", "ADS": "Free with ads", "FLATRATE": "Subscription",
               "RENT": "Rent", "BUY": "Buy", "CINEMA": "In cinemas"}
 KIND_ORDER = ["FREE", "ADS", "FLATRATE", "RENT", "BUY", "CINEMA"]
@@ -160,16 +164,8 @@ def offers(title_id, country, force=False):
     return out
 
 
-# The user's starting list (title, year)
-STARTER_LIST = [
-    ("Radio Flyer", 1992), ("Joy", 2015), ("Finding Forrester", 2000),
-    ("Adopt a Highway", 2019), ("The Painted Veil", 2006), ("Seabiscuit", 2003),
-    ("My Left Foot", 1989), ("It Could Happen to You", 1994), ("The Lost Valentine", 2011),
-    ("The Visitor", 2007), ("CODA", 2021), ("An Unmarried Woman", 1978),
-    ("Maudie", 2016), ("Kramer vs. Kramer", 1979), ("Like Sunday, Like Rain", 2014),
-    ("Secondhand Lions", 2003), ("The Lucky One", 2012), ("I Am Sam", 2001),
-    ("Flipped", 2010),
-]
+# New users start with an empty list (they add films by searching)
+STARTER_LIST = []
 
 
 ADULT = ("porn", "sex", "erotic", "xxx", "nude", "naked")

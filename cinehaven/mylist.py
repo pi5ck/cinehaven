@@ -10,8 +10,20 @@ from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from . import watch  # noqa: E402
 
-CHOICES = [("BOTH", "South Africa + UAE"), ("ZA", "South Africa"), ("AE", "UAE")]
-FLAG = {"ZA": "🇿🇦", "AE": "🇦🇪"}
+CHOICES = [("BOTH", "South Africa + UAE")] + [(c, n) for c, n in watch.COUNTRIES.items()]
+FLAG = {c: chr(0x1F1E6 + ord(c[0]) - 65) + chr(0x1F1E6 + ord(c[1]) - 65) for c in watch.COUNTRIES}
+
+
+def default_country():
+    """New users: their own country from the system locale (fallback: United States)."""
+    import locale
+    import os
+    for v in (os.environ.get("LC_ALL"), os.environ.get("LANG"), locale.getlocale()[0]):
+        if v and "_" in v:
+            cc = v.split("_")[1][:2].upper()
+            if cc in watch.COUNTRIES:
+                return cc
+    return "US"
 CHIP_CLASS = {"FREE": "success", "ADS": "success", "FLATRATE": "accent"}
 
 CSS = b"""
@@ -128,7 +140,7 @@ class MyListPage(Gtk.Box):
         self.entry.connect("search-changed", lambda e: self.search(e.get_text()))
         top.append(self.entry)
         self.country = Gtk.DropDown.new_from_strings([c[1] for c in CHOICES])
-        cur = self.settings.get("country", "BOTH")
+        cur = self.settings.get("country") or default_country()
         self.country.set_selected(next((i for i, c in enumerate(CHOICES) if c[0] == cur), 0))
         self.country.set_valign(Gtk.Align.CENTER)
         self.country.connect("notify::selected", self._country_changed)

@@ -498,7 +498,8 @@ class Window(Adw.ApplicationWindow):
         if self._shelf_loaded_for == key:
             return
         self._shelf_loaded_for = key
-        names = " & ".join({"ZA": "South Africa", "AE": "UAE"}[c] for c in countries)
+        from .watch import COUNTRIES
+        names = " & ".join(COUNTRIES[c] for c in countries)
         self.shelf_lbl.set_label(f"Streaming now in {names} · loading…")
 
         def work():
