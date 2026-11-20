@@ -13,7 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import catalog, fixvideo, health, safety, translate, websearch  # noqa: E402
+from . import catalog, enhance, fixvideo, health, safety, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
@@ -979,8 +979,44 @@ class Window(Adw.ApplicationWindow):
         add = Gtk.Button(label="Load subtitle file…", css_classes=["flat"], margin_top=6)
         add.connect("clicked", lambda *_: (pop.popdown(), self.pick_subtitle()))
         box.append(add)
+        box.append(Gtk.Separator(margin_top=6, margin_bottom=2))
+        box.append(Gtk.Label(label="Picture & sound", xalign=0, css_classes=["heading"], margin_top=4))
+        for key, title, sub in (
+                ("enhance_picture", "Enhance picture", "AI upscaling, sharper detail, less noise"),
+                ("dialogue_boost", "Dialogue boost", "Clearer voices over music and effects"),
+                ("night_mode", "Night mode", "No sudden loud bangs; quiet parts stay audible")):
+            row = Gtk.Box(spacing=12, margin_top=2)
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+            col.append(Gtk.Label(label=title, xalign=0))
+            note = Gtk.Label(label=sub, xalign=0, css_classes=["dim-label", "caption"])
+            col.append(note)
+            if key == "enhance_picture" and self.settings.get(key):
+                live = enhance.describe(self.video.mpv)
+                if live:
+                    note.set_label(f"On now: {live}")
+            row.append(col)
+            sw = Gtk.Switch(active=bool(self.settings.get(key)), valign=Gtk.Align.CENTER)
+            sw.connect("notify::active", lambda w, _p, k=key: self._set_enhancement(k, w.get_active()))
+            row.append(sw)
+            box.append(row)
         pop.set_child(box)
         mb.set_popover(pop)
+
+    def _set_enhancement(self, key, on):
+        self.settings[key] = on
+        save_settings(self.settings)
+        self._apply_enhancements()
+        names = {"enhance_picture": "Enhance picture", "dialogue_boost": "Dialogue boost", "night_mode": "Night mode"}
+        self.toast(f"{names[key]} {'on' if on else 'off'}")
+
+    def _apply_enhancements(self):
+        m = self.video.mpv
+        out_h = self.video.get_height() * self.video.get_scale_factor()
+        try:
+            enhance.apply_picture(m, bool(self.settings.get("enhance_picture")), out_h or None)
+            enhance.apply_audio(m, bool(self.settings.get("dialogue_boost")), bool(self.settings.get("night_mode")))
+        except Exception as e:
+            health.log.warning("Couldn't apply picture/sound settings: %s", e)
 
     def _reset_live(self):
         self.live = False
@@ -1206,6 +1242,24 @@ class Window(Adw.ApplicationWindow):
                 self.set_buffering("This channel isn't responding", "It may be off air right now – try another channel.", None)
         else:
             self.time_lbl.set_label(f"{fmt_time(pos or 0)} / {fmt_time(dur)}")
+        try:
+            key = (m.path, bool(m.video_params), bool(m.audio_params))
+        except Exception:
+            key = None
+        if key and key != getattr(self, "_enh_key", None) and (key[1] or key[2]):
+            self._enh_key = key                # new file (or its streams just appeared)
+            self._apply_enhancements()
+            self._drops = (time.time(), m.frame_drop_count or 0)
+        elif self.settings.get("enhance_picture") and pos and not paused and getattr(self, "_drops", None):
+            t0, d0 = self._drops
+            if time.time() - t0 > 10:            # every 10 s: too many dropped frames? lighten the load
+                d = (m.frame_drop_count or 0) - d0
+                self._drops = (time.time(), m.frame_drop_count or 0)
+                if d > 12:
+                    gone = enhance.reduce(m)
+                    if gone:
+                        health.log.info("Enhance picture: dropped %d frames in 10 s – turned off %s", d, gone)
+                        self.toast(f"Turned off {gone} to keep playback smooth on this computer")
         if pos is not None and not self._lang_done and pos > 0.5:
             self._lang_done = True
             if self.settings.get("auto_english", True):

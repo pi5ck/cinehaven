@@ -58,15 +58,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lt-install
-          key: libtorrent-2.1.2-ucrt64-v2
+          key: libtorrent-2.1.2-ucrt64-v3
       - name: Build libtorrent Python bindings
         if: steps.lt-cache.outputs.cache-hit != 'true'
         run: |
+          # hide the runner's own Python so CMake can only find MSYS2's
+          rm -rf /c/hostedtoolcache/windows/Python
           git clone --depth 1 --branch v2.1.2 --recurse-submodules --shallow-submodules https://github.com/arvidn/libtorrent.git lt-src
           cmake -S lt-src -B lt-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -Dpython-bindings=ON -Dpython-egg-info=OFF -DBUILD_SHARED_LIBS=ON \
+            -Dpython-bindings=ON -Dpython-egg-info=OFF -DBUILD_SHARED_LIBS=OFF -Dstatic_runtime=OFF \
             -Dbuild_tests=OFF -Dbuild_examples=OFF -Dbuild_tools=OFF \
             -DPython3_EXECUTABLE="$(cygpath -m "$(command -v python)")" -DPython3_FIND_REGISTRY=NEVER \
+            -DPython_EXECUTABLE="$(cygpath -m "$(command -v python)")" -DPython_FIND_REGISTRY=NEVER \
             -DCMAKE_INSTALL_PREFIX="$PWD/lt-install"
           cmake --build lt-build
           cmake --install lt-build
