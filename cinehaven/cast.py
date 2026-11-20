@@ -18,6 +18,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import DATA_DIR
 from .health import log
 
 SSDP = ("239.255.255.250", 1900)
@@ -27,7 +28,7 @@ RC = "urn:schemas-upnp-org:service:RenderingControl:1"
 MIME = {".mkv": "video/x-matroska", ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
         ".avi": "video/x-msvideo", ".mov": "video/quicktime", ".ts": "video/mp2t", ".mpg": "video/mpeg",
         ".mpeg": "video/mpeg", ".wmv": "video/x-ms-wmv", ".ogv": "video/ogg", ".flv": "video/x-flv",
-        ".srt": "application/x-subrip", ".vtt": "text/vtt"}
+        ".srt": "application/x-subrip", ".vtt": "text/vtt", ".m3u8": "application/vnd.apple.mpegurl"}
 
 
 def lan_ip():
@@ -71,7 +72,15 @@ class _Files(BaseHTTPRequestHandler):
         self._serve(head=False)
 
     def _serve(self, head):
-        path = self.server.shared.get(urllib.parse.urlparse(self.path).path)
+        url_path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
+        path = self.server.shared.get(url_path)
+        if path is None:                          # a file inside a shared folder (HLS segments)
+            for prefix, folder in self.server.folders.items():
+                if url_path.startswith(prefix):
+                    name = url_path[len(prefix):]
+                    if name and "/" not in name and ".." not in name:
+                        path = os.path.join(folder, name)
+                    break
         if not path or not os.path.isfile(path):
             self.send_error(404)
             return
@@ -129,16 +138,27 @@ class FileServer:
         self.httpd = ThreadingHTTPServer(("0.0.0.0", 0), _Files)
         self.httpd.daemon_threads = True
         self.httpd.shared = {}
+        self.httpd.folders = {}
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def share(self, path):
         """-> URL a TV can fetch the file from."""
         self._start()
         self.httpd.shared.clear()                 # only the video being cast is shared
+        self.httpd.folders.clear()
         name = urllib.parse.quote(os.path.basename(path))
         key = f"/{secrets.token_urlsafe(12)}/{name}"
         self.httpd.shared[key] = path
         return f"http://{lan_ip()}:{self.httpd.server_address[1]}{key}"
+
+    def share_folder(self, folder, entry):
+        """-> URL of `entry` inside `folder` (its neighbours are served too)."""
+        self._start()
+        self.httpd.shared.clear()
+        self.httpd.folders.clear()
+        prefix = f"/{secrets.token_urlsafe(12)}/"
+        self.httpd.folders[prefix] = folder
+        return f"http://{lan_ip()}:{self.httpd.server_address[1]}{prefix}{urllib.parse.quote(entry)}"
 
     def stop(self):
         if self.httpd:
@@ -345,10 +365,97 @@ def _dlna_device(location):
     return DLNA(name, avt, rc, model) if avt else None
 
 
+# ── making a video playable on the TV ───────────────────────────────────
+# what each kind of receiver plays straight from the file
+DIRECT = {
+    "AirPlay": ({"mov,mp4,m4a,3gp,3g2,mj2"}, {"h264", "hevc"}, {"aac", "ac3", "eac3", "alac", "mp3"}),
+    "Chromecast": ({"mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm"}, {"h264", "vp8", "vp9", "hevc", "av1"},
+                   {"aac", "mp3", "opus", "vorbis", "flac", "ac3", "eac3"}),
+}
+TV_DIR = os.path.join(DATA_DIR, "tvcast")
+
+
+def needs_conversion(info, kind):
+    if kind not in DIRECT or not info:
+        return False                           # DLNA TVs differ too much – let the TV try the file
+    fmts, vcodecs, acodecs = DIRECT[kind]
+    fmt = (info.get("format") or {}).get("format_name", "")
+    v = [st.get("codec_name") for st in info.get("streams", []) if st.get("codec_type") == "video"
+         and not (st.get("disposition") or {}).get("attached_pic")]
+    a = [st.get("codec_name") for st in info.get("streams", []) if st.get("codec_type") == "audio"]
+    return not (fmt in fmts and (not v or v[0] in vcodecs) and (not a or a[0] in acodecs))
+
+
+class TVStream:
+    """A growing HLS copy of a video, made for a TV, starting at `start` seconds."""
+
+    def __init__(self, path, start=0):
+        from . import fixvideo
+        self.path, self.start = path, max(0, int(start or 0))
+        self.tools, self.info = fixvideo.tools_for(path)
+        self.dir = os.path.join(TV_DIR, secrets.token_hex(6))
+        self.proc = None
+
+    def run(self, ready, failed):
+        """Start converting; ready(url) once the TV can begin playing."""
+        import subprocess
+        shutil = __import__("shutil")
+        shutil.rmtree(TV_DIR, ignore_errors=True)          # one TV stream at a time
+        os.makedirs(self.dir)
+        streams = (self.info or {}).get("streams", [])
+        v = next((st for st in streams if st.get("codec_type") == "video"
+                  and not (st.get("disposition") or {}).get("attached_pic")), None)
+        a = next((st for st in streams if st.get("codec_type") == "audio"), None)
+        copy_v = v is not None and v.get("codec_name") == "h264" and (v.get("pix_fmt") or "yuv420p") == "yuv420p"
+        cmd = [self.tools[0], "-hide_banner", "-nostdin", "-y"]
+        if self.start:
+            cmd += ["-ss", str(self.start)]
+        cmd += ["-fflags", "+genpts", "-i", self.path, "-map", "0:v:0?", "-map", "0:a:0?"]
+        cmd += (["-c:v", "copy"] if copy_v else
+                ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+                 "-force_key_frames", "expr:gte(t,n_forced*4)"])
+        cmd += (["-c:a", "copy"] if a is not None and a.get("codec_name") == "aac" else
+                ["-c:a", "aac", "-b:a", "192k", "-ac", "2"])
+        pl = os.path.join(self.dir, "index.m3u8")
+        cmd += ["-f", "hls", "-hls_time", "6", "-hls_playlist_type", "event",
+                "-hls_segment_filename", os.path.join(self.dir, "seg%05d.ts"), pl]
+        log.info("Cast: preparing %s for the TV (%s video)", os.path.basename(self.path),
+                 "copying" if copy_v else "converting")
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                     **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+
+        def watch():
+            t0 = time.time()
+            while self.proc.poll() is None and time.time() - t0 < 120:
+                try:
+                    if open(pl).read().count("#EXTINF") >= 2:
+                        ready(files.share_folder(self.dir, "index.m3u8"))
+                        return
+                except OSError:
+                    pass
+                time.sleep(0.5)
+            if os.path.exists(pl) and "#EXTINF" in open(pl).read():
+                ready(files.share_folder(self.dir, "index.m3u8"))
+            else:
+                failed((self.proc.stderr.read() or b"").decode(errors="replace")[-300:])
+        threading.Thread(target=watch, daemon=True).start()
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+
+
 def discover(timeout=5):
     """All TVs and cast devices on the home network."""
     found = []
     threads = []
+
+    def airplay_():
+        try:
+            from . import airplay
+            found.extend(airplay.discover(timeout - 1))
+        except Exception as e:
+            log.info("Cast: AirPlay discovery failed: %s", e)
 
     def dlna():
         found.extend(_discover_dlna(timeout))
@@ -363,7 +470,7 @@ def discover(timeout=5):
             found.extend(Chromecast(c) for c in casts)
         except Exception as e:
             log.info("Cast: Chromecast discovery failed: %s", e)
-    for f in (dlna, cc):
+    for f in (dlna, cc, airplay_):
         t = threading.Thread(target=f, daemon=True)
         t.start()
         threads.append(t)

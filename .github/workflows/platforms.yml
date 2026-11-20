@@ -38,6 +38,7 @@ jobs:
             mingw-w64-ucrt-x86_64-libadwaita
             mingw-w64-ucrt-x86_64-python-gobject
             mingw-w64-ucrt-x86_64-python-pip
+            mingw-w64-ucrt-x86_64-python-cryptography
             mingw-w64-ucrt-x86_64-mpv
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-boost
@@ -87,6 +88,9 @@ jobs:
           pip install --break-system-packages python-mpv
           # optional: Chromecast support (casting to DLNA TVs needs nothing extra)
           pip install --break-system-packages pychromecast || echo "pychromecast unavailable – Chromecast casting off"
+          # AirPlay: discovery needs zeroconf; pairing uses the cryptography package from MSYS2
+          pip install --break-system-packages zeroconf || echo "zeroconf unavailable – AirPlay discovery off"
+          python -c "import cryptography, zeroconf; print('AirPlay ready')" || true
       - name: Smoke test
         run: python packaging/smoke_test.py
       - name: Build the self-contained bundle
@@ -128,6 +132,7 @@ jobs:
           echo "PY=$PY" >> $GITHUB_ENV
           $PY -m pip install --break-system-packages python-mpv
           $PY -m pip install --break-system-packages pychromecast || echo "pychromecast unavailable"
+          $PY -m pip install --break-system-packages cryptography zeroconf || echo "AirPlay libraries unavailable"
           $PY -c "import libtorrent; print('libtorrent', libtorrent.__version__)"
       - name: Smoke test
         env:

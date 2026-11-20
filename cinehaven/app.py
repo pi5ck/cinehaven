@@ -480,6 +480,9 @@ class Window(Adw.ApplicationWindow):
         self.cast_box = cb
         ov.add_overlay(cb)
         self.cast_dev = None
+        self._tv_stream = None
+        self._cast_offset = 0
+        self._cast_playing = False
         self._cast_status = {}
         self._cast_poll = 0
 
@@ -1071,7 +1074,7 @@ class Window(Adw.ApplicationWindow):
         if self.cast_dev:
             pos = self._cast_status.get("pos") or 0
             self._cast_status["pos"] = max(0, pos + s)
-            self._cast_do(lambda: self.cast_dev.seek(max(0, pos + s)))
+            self._cast_do(lambda: self._cast_seek(max(0, pos + s)))
             self._show_controls()
             return
         try:
@@ -1129,7 +1132,7 @@ class Window(Adw.ApplicationWindow):
     def _on_seek(self, _scale, _scroll, value):
         if self.cast_dev:
             self._cast_status["pos"] = max(0, value)
-            self._cast_do(lambda: self.cast_dev.seek(max(0, value)))
+            self._cast_do(lambda: self._cast_seek(max(0, value)))
             return False
         try:
             self.video.mpv.seek(max(0, value), "absolute", "default-precise")
@@ -1636,7 +1639,8 @@ class Window(Adw.ApplicationWindow):
         def found(devs):
             if not devs:
                 status.set_label("No TVs found. Make sure the TV is on and on the same Wi-Fi. "
-                                 "Chromecast, Google TV and DLNA smart TVs (Samsung, LG, Sony…) work."
+                                 "Apple TV and AirPlay TVs, Chromecast / Google TV, and DLNA smart TVs "
+                                 "(Samsung, LG, Sony…) work."
                                  + ("" if cast.chromecast_available() else
                                     " Chromecast needs the pychromecast package."))
                 return False
@@ -1703,24 +1707,119 @@ class Window(Adw.ApplicationWindow):
         self.skip_btn.set_visible(False)
         self.next_btn.set_visible(False)
 
+        self._cast_offset = 0
+        self._cast_playing = False
+        if self._tv_stream:
+            self._tv_stream.stop()
+            self._tv_stream = None
+        if dev.kind == "AirPlay":
+            dev.ask_pin = lambda: self._ask_airplay_pin(dev)
+
         def done(err):
             if self.cast_dev is not dev:
                 return False
             if err:
                 self.cast_dev = None
                 self.cast_box.set_visible(False)
-                self.toast(f"{dev.name} couldn't play this video")
+                if self._tv_stream:
+                    self._tv_stream.stop()
+                    self._tv_stream = None
+                self._cast_failed(dev, err)
                 return False
             hint = ""
-            if vc and not any(k in vc for k in ("h264", "avc", "hevc", "h265", "vp9", "vp8", "av1")):
+            if (dev.kind == "DLNA" and vc
+                    and not any(k in vc for k in ("h264", "avc", "hevc", "h265", "vp9", "vp8", "av1"))):
                 hint = " If the TV shows an error, it can't play this video format."
             self.cast_sub.set_label("Use the controls here or the phone remote." + hint)
+            self._cast_playing = True
             return False
-        self._cast_do(lambda: dev.play(url, title=title, mime=mime, start=pos), done)
+
+        local = url.startswith("http://") and os.path.isfile(getattr(self.video.mpv, "path", "") or "")
+        path = self.video.mpv.path if local else None
+
+        def work():
+            try:
+                if hasattr(dev, "connect"):
+                    GLib.idle_add(lambda: self.cast_sub.set_label(f"Connecting to {dev.name}…") and False)
+                    dev.connect()               # pair first – no point preparing a video it won't take
+                info = fixvideo.probe(path) if path else None
+                if path and cast.needs_conversion(info, dev.kind):
+                    GLib.idle_add(lambda: self.cast_sub.set_label(
+                        f"Preparing the video for {dev.name}…") and False)
+                    ts = cast.TVStream(path, pos)
+                    self._tv_stream = ts
+                    got = {}
+                    ev = threading.Event()
+                    ts.run(lambda u: (got.update(url=u), ev.set()), lambda e: (got.update(err=e), ev.set()))
+                    ev.wait(150)
+                    if "url" not in got:
+                        raise RuntimeError("couldn't prepare the video: " + str(got.get("err", "timed out")))
+                    self._cast_offset = ts.start
+                    dev.play(got["url"], title=title, mime="application/vnd.apple.mpegurl", start=0)
+                else:
+                    dev.play(url, title=title, mime=mime, start=pos)
+                GLib.idle_add(done, None)
+            except Exception as e:
+                health.log.info("Cast to %s failed: %s", dev.name, e)
+                GLib.idle_add(done, e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cast_seek(self, pos):
+        """Seek on the TV (positions there start where a prepared copy began)."""
+        self.cast_dev.seek(max(0, pos - self._cast_offset))
+
+    def _cast_failed(self, dev, err):
+        msg = str(err)
+        if dev.kind == "AirPlay" and ("403" in msg or "refused" in msg):
+            body = (f"{dev.name} only accepts AirPlay from your own Apple devices right now.\n\n"
+                    "To allow CineHaven:\n"
+                    "• Apple TV: Settings → AirPlay and HomeKit → Allow Access → "
+                    "“Anyone on the Same Network” (or “Everyone”).\n"
+                    "• Mac: System Settings → General → AirDrop & Handoff → AirPlay Receiver → "
+                    "Allow AirPlay for “Anyone on the Same Network”.\n"
+                    "• Samsung / LG TV: Settings → General → Apple AirPlay Settings → Require Code → "
+                    "“First Time Only”.\n\nThen press the TV button again.")
+            d = Adw.AlertDialog(heading=f"{dev.name} needs a setting changed", body=body)
+            d.add_response("ok", "OK")
+            d.present(self)
+            return
+        if "cancelled" in msg:
+            return
+        self.toast(f"{dev.name} couldn't play this video")
+
+    def _ask_airplay_pin(self, dev):
+        """Called from a worker thread: show a dialog for the code on the TV, wait for the answer."""
+        ev = threading.Event()
+        answer = {}
+
+        def show():
+            d = Adw.AlertDialog(heading=f"Pair with {dev.name}",
+                                body="Type the 4-digit code shown on the TV. CineHaven remembers it, "
+                                     "so you only do this once.")
+            entry = Gtk.Entry(input_purpose=Gtk.InputPurpose.DIGITS, max_length=4, xalign=0.5,
+                              css_classes=["title-1"])
+            d.set_extra_child(entry)
+            d.add_response("cancel", "Cancel")
+            d.add_response("pair", "Pair")
+            d.set_response_appearance("pair", Adw.ResponseAppearance.SUGGESTED)
+            d.set_default_response("pair")
+            entry.connect("activate", lambda *_: (d.close(), resp(d, "pair")))
+
+            def resp(_d, r):
+                if not ev.is_set():
+                    answer["pin"] = entry.get_text() if r == "pair" else None
+                    ev.set()
+            d.connect("response", resp)
+            d.present(self)
+            entry.grab_focus()
+            return False
+        GLib.idle_add(show)
+        ev.wait(300)
+        return answer.get("pin")
 
     def _cast_tick(self):
         st = self._cast_status
-        if time.time() - self._cast_poll > 2:
+        if self._cast_playing and time.time() - self._cast_poll > 2:
             self._cast_poll = time.time()
             dev = self.cast_dev
 
@@ -1729,6 +1828,11 @@ class Window(Adw.ApplicationWindow):
                     s = dev.status()
                 except Exception:
                     return
+                off = self._cast_offset
+                if s.get("pos") is not None:
+                    s["pos"] += off
+                if s.get("dur") is not None and off:
+                    s.pop("dur")            # a prepared copy grows as it converts – keep the film's length
                 GLib.idle_add(lambda: (self.cast_dev is dev and self._cast_status.update(
                     {k: v for k, v in s.items() if v is not None})) and False)
             threading.Thread(target=work, daemon=True).start()
@@ -1750,6 +1854,9 @@ class Window(Adw.ApplicationWindow):
         self.cast_dev = None
         self.cast_box.set_visible(False)
         self._cast_do(dev.stop)
+        if self._tv_stream:
+            self._tv_stream.stop()
+            self._tv_stream = None
         cast.files.stop()
         if resume_here:
             try:

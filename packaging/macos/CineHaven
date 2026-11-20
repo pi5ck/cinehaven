@@ -20,7 +20,7 @@ export PATH="$PREFIX/bin:$PATH" DYLD_FALLBACK_LIBRARY_PATH="$PREFIX/lib"
 if ! "$PY" -c "import gi, libtorrent, mpv; gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')" 2>/dev/null; then
   [ "${1:-}" = "--check" ] && { echo "missing libraries"; exit 1; }
   if ask "CineHaven needs to install GTK, mpv and libtorrent with Homebrew. This takes about 10 minutes and opens a Terminal window. Install now?" "Install"; then
-    CMD="'$BREW' install $PKGS && '$PY' -m pip install --break-system-packages python-mpv && open -a '$(cd "$RES/../.." && pwd)'"
+    CMD="'$BREW' install $PKGS && '$PY' -m pip install --break-system-packages python-mpv && ('$PY' -m pip install --break-system-packages cryptography zeroconf pychromecast || true) && open -a '$(cd "$RES/../.." && pwd)'"
     osascript -e "tell application \"Terminal\" to do script \"$CMD\"" -e 'tell application "Terminal" to activate'
   fi
   exit 0

@@ -19,7 +19,7 @@ Section: video
 Priority: optional
 Architecture: all
 Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1 (>= 1.5), python3-libtorrent (>= 2.0), python3-mpv, libmpv2 | libmpv1
-Recommends: python3-pychromecast, ffmpeg
+Recommends: python3-pychromecast, python3-zeroconf, python3-cryptography, ffmpeg
 Maintainer: CineHaven contributors <noreply@cinehaven.invalid>
 Description: Stream free movies while they download
  CineHaven searches the Internet Archive's public-domain and open film
