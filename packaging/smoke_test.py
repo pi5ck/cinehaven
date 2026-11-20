@@ -9,13 +9,19 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+# inside a Windows bundle: python, GTK, mpv and ffmpeg live in ../../bin
+_bundle_bin = os.path.join(os.path.dirname(os.path.dirname(HERE)), "bin")
+if os.path.isdir(_bundle_bin):
+    os.environ["PATH"] = _bundle_bin + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(_bundle_bin)
 os.environ["CINEHAVEN_APP_ID"] = "io.github.cinehaven.SmokeTest"
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="cinehaven-smoke-")
 
 errors = []
 sys.excepthook = lambda t, v, tb: errors.append("".join(traceback.format_exception(t, v, tb)))
 
-print("platform:", sys.platform, sys.version.split()[0])
+print("platform:", sys.platform, sys.version.split()[0], "·", sys.executable)
 for mod in ("gi", "libtorrent", "mpv"):
     try:
         m = __import__(mod)

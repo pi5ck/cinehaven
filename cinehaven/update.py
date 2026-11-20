@@ -36,7 +36,11 @@ def _get(url, timeout=30):
 
 
 def user_install():
-    """True if this copy lives in the user's home and can replace itself."""
+    """True if this copy lives in the user's home and can replace itself (Linux/BSD).
+
+    Windows and macOS copies come from an installer, so they get a link to the new one."""
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        return False
     home = os.path.expanduser("~")
     return APP_DIR.startswith(home + "/") and os.access(os.path.dirname(APP_DIR), os.W_OK)
 

@@ -1,0 +1,29 @@
+#!/bin/bash
+# CineHaven.app launcher: finds Homebrew's Python + libraries, offers to install them if missing.
+RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+BREW=""
+for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$p" ] && BREW="$p" && break; done
+PKGS="gtk4 libadwaita pygobject3 mpv libtorrent-rasterbar ffmpeg"
+
+ask() {  # ask "message" "button" → 0 if the button was pressed
+  osascript -e "button returned of (display dialog \"$1\" with title \"CineHaven\" buttons {\"Cancel\", \"$2\"} default button \"$2\")" 2>/dev/null | grep -q "$2"
+}
+
+if [ -z "$BREW" ]; then
+  ask "CineHaven uses Homebrew to install its video libraries. Homebrew isn't installed yet. Open brew.sh to install it, then open CineHaven again." "Open brew.sh" && open "https://brew.sh"
+  exit 1
+fi
+PREFIX="$("$BREW" --prefix)"
+PY="$PREFIX/bin/python3"
+export PATH="$PREFIX/bin:$PATH" DYLD_FALLBACK_LIBRARY_PATH="$PREFIX/lib"
+
+if ! "$PY" -c "import gi, libtorrent, mpv; gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')" 2>/dev/null; then
+  [ "${1:-}" = "--check" ] && { echo "missing libraries"; exit 1; }
+  if ask "CineHaven needs to install GTK, mpv and libtorrent with Homebrew. This takes about 10 minutes and opens a Terminal window. Install now?" "Install"; then
+    CMD="'$BREW' install $PKGS && '$PY' -m pip install --break-system-packages python-mpv && open -a '$(cd "$RES/../.." && pwd)'"
+    osascript -e "tell application \"Terminal\" to do script \"$CMD\"" -e 'tell application "Terminal" to activate'
+  fi
+  exit 0
+fi
+[ "${1:-}" = "--check" ] && { echo "ok"; exit 0; }
+exec "$PY" "$RES/app/cinehaven-launcher" "$@"

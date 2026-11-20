@@ -15,6 +15,15 @@ CRASH_SIGNALS = {getattr(signal, n) for n in ("SIGSEGV", "SIGABRT", "SIGBUS", "S
 
 
 def _setup_paths():
+    # Windows / macOS bundles: the runtime (python, GTK, mpv, ffmpeg) sits next to the app folder
+    runtime_bin = os.path.join(os.path.dirname(HERE), "bin")
+    if os.path.isdir(runtime_bin):
+        os.environ["PATH"] = runtime_bin + os.pathsep + os.environ.get("PATH", "")
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(runtime_bin)
+            except OSError:
+                pass
     for cand in (HERE, os.path.join(HERE, ".."), "/usr/share/cinehaven",
                  os.path.expanduser("~/.local/share/cinehaven-app")):
         if os.path.isdir(os.path.join(cand, "cinehaven")):

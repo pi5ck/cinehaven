@@ -1,9 +1,15 @@
-# Starts CineHaven for real on Linux, Windows and macOS (and FreeBSD in a VM) on every push.
+# On every push: start CineHaven for real on Linux, Windows and macOS, then build the
+# Windows installer and the macOS app and start those too.
+# When a GitHub release is published, the installers are attached to it.
 name: platforms
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   linux:
     runs-on: ubuntu-24.04
@@ -40,7 +46,12 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-python-setuptools
+            mingw-w64-ucrt-x86_64-ntldd
+            mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-imagemagick
+            mingw-w64-ucrt-x86_64-librsvg
             git
+            zip
       # MSYS2 ships the libtorrent C++ library but not its Python bindings, so build them
       - name: Cache libtorrent build
         id: lt-cache
@@ -71,6 +82,32 @@ jobs:
         run: pip install --break-system-packages python-mpv
       - name: Smoke test
         run: python packaging/smoke_test.py
+      - name: Build the self-contained bundle
+        run: packaging/windows/build.sh
+      - name: Start the bundle with nothing else installed
+        shell: cmd
+        run: |
+          set /p BUNDLE=<dist\windows-dir.txt
+          set BUNDLE=%BUNDLE:/=\%
+          set PATH=C:\Windows\System32;C:\Windows
+          "%BUNDLE%\bin\python.exe" "%BUNDLE%\app\packaging\smoke_test.py"
+      - name: Build the installer
+        run: |
+          VER=$(python -c "import re;print(re.search(r'APP_VERSION = \"(.+?)\"', open('cinehaven/__init__.py').read()).group(1))")
+          makensis -DVERSION=$VER packaging/windows/installer.nsi
+          (cd dist && zip -qr "CineHaven-$VER-windows-portable.zip" "CineHaven-$VER-windows")
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*-windows-setup.exe
+            dist/*-windows-portable.zip
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*-windows-setup.exe dist/*-windows-portable.zip --clobber
 
   macos:
     runs-on: macos-latest
@@ -87,3 +124,39 @@ jobs:
         env:
           DYLD_FALLBACK_LIBRARY_PATH: /opt/homebrew/lib
         run: $PY packaging/smoke_test.py
+      - name: Build CineHaven.app
+        run: |
+          brew install librsvg
+          packaging/macos/build.sh
+      - name: Start the app
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: /opt/homebrew/lib
+        run: |
+          dist/CineHaven.app/Contents/MacOS/CineHaven --check
+          $PY dist/CineHaven.app/Contents/Resources/app/packaging/smoke_test.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*-macos.zip
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*-macos.zip --clobber
+
+  checksums:
+    if: github.event_name == 'release'
+    needs: [windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Add the installers to SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir r && cd r
+          gh release download "$TAG" -R "${{ github.repository }}"
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber -R "${{ github.repository }}"
