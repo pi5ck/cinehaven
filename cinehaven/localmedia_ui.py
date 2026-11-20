@@ -11,7 +11,8 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import localmedia as L  # noqa: E402
 
-FILTERS = [("all", "All"), ("movie", "Movies"), ("tv", "TV episodes"), ("home", "Home & other")]
+FILTERS = [("all", "All"), ("movie", "Movies"), ("documentary", "Documentaries"), ("tv", "TV episodes"),
+           ("home", "Home & other")]
 SORTS = [("recent", "Recently added"), ("title", "Title A–Z"), ("year", "Year")]
 
 CSS = b"""
@@ -47,9 +48,18 @@ class VideoCard(Gtk.Box):
                                        L.human_size(v["size"]), L.drive_label(v["path"])) if x)
         self.append(Gtk.Label(label=meta, xalign=0, ellipsize=Pango.EllipsizeMode.END,
                               css_classes=["dim-label", "caption"]))
-        if v.get("incomplete"):
-            self.append(Gtk.Label(label="⚠ Incomplete download", xalign=0, css_classes=["badge", "warning"],
-                                  halign=Gtk.Align.START))
+        badges = Gtk.Box(spacing=6)
+        if page.is_new(v):
+            badges.append(Gtk.Label(label="NEW", css_classes=["badge", "accent"]))
+        if v.get("source") == "cinehaven":
+            badges.append(Gtk.Label(label="✔ Downloaded in CineHaven", css_classes=["badge", "success"]))
+        if v.get("busy"):
+            badges.append(Gtk.Label(label="Downloading…" if v.get("incomplete") else "Still copying…",
+                                    css_classes=["badge", "warning"]))
+        elif v.get("incomplete"):
+            badges.append(Gtk.Label(label="⚠ Incomplete download", css_classes=["badge", "warning"]))
+        if badges.get_first_child():
+            self.append(badges)
         self.set_tooltip_text(v["path"])
         rc = Gtk.GestureClick(button=3)
         rc.connect("pressed", lambda *_: page.menu_for(self))
@@ -127,18 +137,98 @@ class MyVideosPage(Gtk.Box):
         self.vm.connect("mount-added", lambda *_: GLib.timeout_add_seconds(2, lambda: (self.rescan(), False)[1]))
         self.vm.connect("mount-removed", lambda *_: GLib.timeout_add_seconds(1, lambda: (self.rescan(), False)[1]))
         GLib.timeout_add_seconds(3, lambda: (self.rescan(), False)[1])     # fresh scan shortly after start
-        GLib.timeout_add_seconds(1800, lambda: (self.rescan(), True)[1])   # and every 30 minutes
+        GLib.timeout_add_seconds(600, lambda: (self.rescan(), True)[1])    # safety net every 10 minutes
+        self.monitors = {}
+        self._pending = None
+        self._pending_due = 0
+        self._first_scan_done = bool(self.videos)
+
+    # ── live folder watching ─────────────────────────────────────────────
+    def _setup_watchers(self):
+        wanted = []
+        for root in L.watch_dirs() + list(self.win.settings.get("extra_folders", [])):
+            wanted.append(root)
+            try:                                           # + two levels of sub-folders
+                for e in os.scandir(root):
+                    if e.is_dir(follow_symlinks=False) and not e.name.startswith("."):
+                        wanted.append(e.path)
+                        for e2 in os.scandir(e.path):
+                            if e2.is_dir(follow_symlinks=False) and not e2.name.startswith("."):
+                                wanted.append(e2.path)
+            except OSError:
+                pass
+        wanted = wanted[:600]
+        for d in list(self.monitors):
+            if d not in wanted:
+                self.monitors.pop(d).cancel()
+        for d in wanted:
+            if d in self.monitors:
+                continue
+            try:
+                m = Gio.File.new_for_path(d).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+            except GLib.Error:
+                continue
+            m.connect("changed", self._on_fs_change)
+            self.monitors[d] = m
+
+    def _on_fs_change(self, _mon, f, other, event):
+        E = Gio.FileMonitorEvent
+        if event not in (E.CREATED, E.CHANGES_DONE_HINT, E.DELETED, E.MOVED_IN, E.MOVED_OUT, E.RENAMED):
+            return
+        names = [x.get_basename() or "" for x in (f, other) if x is not None]
+        ext_ok = any(os.path.splitext(n)[1].lower() in L.EXTS or "." not in n for n in names)
+        if ext_ok:
+            if self.scanning:
+                self._again = True
+            else:
+                self.schedule_rescan(3, keep_sooner=True)
+
+    def schedule_rescan(self, delay, keep_sooner=False):
+        """At most one scan `delay` seconds after the first change (a burst of events = one scan)."""
+        due = time.time() + delay
+        if self._pending:
+            if keep_sooner and self._pending_due <= due:
+                return                       # a scan is already coming at least as soon
+            GLib.source_remove(self._pending)
+        self._pending_due = due
+        self._pending = GLib.timeout_add_seconds(delay, self._pending_fire)
+
+    def _pending_fire(self):
+        self._pending = None
+        self.rescan()
+        return False
+
+    def is_new(self, v):
+        played = self.win.settings.get("played_videos", [])
+        return (time.time() - v.get("first_seen", 0) < 3 * 86400 and v["path"] not in played
+                and not self.win.settings.get("resume", {}).get(v["path"]))
 
     # ── data ─────────────────────────────────────────────────────────────
     def _fill(self):
-        self.flow.remove_all()
+        """Update the grid in place: keep unchanged cards, add new ones, drop removed ones."""
+        def sig(v):
+            return (v["mtime"], v.get("busy"), v.get("incomplete"), v["title"], self.is_new(v))
+        current = {}
+        child = self.flow.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            card = child.get_child()
+            current[card.v["path"]] = (child, card)
+            child = nxt
+        wanted = {v["path"]: v for v in self.videos}
+        for path, (child, card) in current.items():
+            if path not in wanted or sig(card.v) != sig(wanted[path]):
+                self.flow.remove(child)
+                current[path] = None
         for v in self.videos:
-            self.flow.append(VideoCard(self, v))
+            if not current.get(v["path"]):
+                self.flow.append(VideoCard(self, v))
+        self.flow.invalidate_sort()
         self._update_status()
 
     def _update_status(self):
         n = len(self.videos)
-        kinds = {k: sum(1 for v in self.videos if v["kind"] == k) for k in ("movie", "tv", "home")}
+        kinds = {k: sum(1 for v in self.videos if v["kind"] == k) for k in ("movie", "documentary", "tv", "home")}
         for key, label in FILTERS:
             cnt = n if key == "all" else kinds.get(key, 0)
             self.chip_btns[key].set_label(f"{label} {cnt}" if cnt else label)
@@ -154,7 +244,9 @@ class MyVideosPage(Gtk.Box):
 
     def rescan(self):
         if self.scanning:
+            self._again = True               # something changed mid-scan – scan once more after
             return
+        self._again = False
         self.scanning = True
         self._scan_found = self._scan_dirs = 0
         self.rescan_btn.set_sensitive(False)
@@ -164,9 +256,18 @@ class MyVideosPage(Gtk.Box):
             self._scan_dirs, self._scan_found = dirs, found
             GLib.idle_add(self._update_status)
 
+        known = {}
+        for it in list(self.win.engine.items.values()):
+            try:
+                if it.file_index is not None and it.has_metadata():
+                    known[os.path.realpath(it.file_info()[0])] = {
+                        "title": it.title, "year": it.meta.get("year"), "kind": it.meta.get("kind", "movie")}
+            except Exception:
+                pass
+
         def work():
             try:
-                vids = L.scan(prog, stop=lambda: self.win.engine.closing)
+                vids = L.scan(prog, stop=lambda: self.win.engine.closing, known=known)
             except Exception as e:
                 print("scan failed:", e)
                 vids = None
@@ -178,11 +279,26 @@ class MyVideosPage(Gtk.Box):
             self.last_scan = time.time()
             if vids is not None:
                 old = {v["path"]: v for v in self.videos}
+                vids = vids + [v for v in self._extra_videos() if v["path"] not in {x["path"] for x in vids}]
                 changed = [v["path"] for v in vids] != list(old) or any(
-                    old.get(v["path"], {}).get("mtime") != v["mtime"] for v in vids)
-                self.videos = vids + [v for v in self._extra_videos() if v["path"] not in {x["path"] for x in vids}]
+                    (old.get(v["path"], {}).get("mtime"), old.get(v["path"], {}).get("busy"),
+                     old.get(v["path"], {}).get("title")) != (v["mtime"], v.get("busy"), v["title"]) for v in vids)
+                new = [v for v in vids if v["path"] not in old and not v.get("busy")]
+                self.videos = vids
                 if changed:
                     self._fill()
+                if new and self._first_scan_done:
+                    names = ", ".join(f"“{v['title']}”" for v in new[:2]) + (f" and {len(new) - 2} more"
+                                                                             if len(new) > 2 else "")
+                    t = Adw.Toast(title=f"Added to My Videos: {names}", button_label="Show", timeout=6)
+                    t.connect("button-clicked", lambda *_: self.win.views.set_visible_child_name("videos"))
+                    self.win.toasts.add_toast(t)
+                self._first_scan_done = True
+                if any(v.get("busy") for v in vids) and not self._pending:
+                    self.schedule_rescan(30)                # check again once copying has finished
+            self._setup_watchers()
+            if getattr(self, "_again", False):
+                self.schedule_rescan(1)
             self._update_status()
         threading.Thread(target=work, daemon=True).start()
 
@@ -271,6 +387,10 @@ class MyVideosPage(Gtk.Box):
             self.rescan()
             return
         title = v["title"] + (f" ({v['year']})" if v.get("year") else "")
+        played = self.win.settings.setdefault("played_videos", [])
+        if v["path"] not in played:
+            played.append(v["path"])
+            del played[:-1000]
         self.win.play_local(v["path"], title=title)
 
     def menu_for(self, card):

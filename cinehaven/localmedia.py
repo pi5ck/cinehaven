@@ -102,6 +102,10 @@ def parse(path, size=0):
         cut = min(cut, pick[0])
     title = _clean(PART.sub("", text[:cut])) or _clean(text) or stem
     title = re.sub(r"\s*\(\s*$", "", title)
+    if title.islower() or title.isupper():           # "the_battle_of_midway" → "The Battle of Midway"
+        small = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "vs"}
+        words = title.lower().split()
+        title = " ".join(w if (i and w in small) else w[:1].upper() + w[1:] for i, w in enumerate(words))
     if not info["year"] and kind != "tv":           # year often only in the folder name
         fy = re.search(r"(?<![A-Za-z0-9])(19[2-9]\d|20[0-4]\d)(?![A-Za-z0-9])", folder)
         if fy and _clean(folder).lower().startswith(title.lower()[:12]):
@@ -113,10 +117,31 @@ def parse(path, size=0):
     return dict(info, title=title, kind=kind)
 
 
-def scan(progress=None, stop=lambda: False):
-    """Walk every root. Returns list of video dicts. progress(dirs, found) is called now and then."""
+def watch_dirs():
+    """Folders where new videos usually appear (watched live for changes)."""
+    out = []
+    try:
+        dl = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True, timeout=2).stdout.strip()
+    except Exception:
+        dl = ""
+    home = os.path.expanduser("~")
+    for d in (dl, os.path.join(home, "Downloads"), os.path.join(home, "Videos"), os.path.join(home, "Movies"),
+              os.path.join(home, "Desktop"), DOWNLOAD_DIR):
+        if d and os.path.isdir(d) and d != home and d not in out:
+            out.append(d)
+    out += [r for r in roots() if r != home and r not in out]
+    return out
+
+
+def scan(progress=None, stop=lambda: False, known=None):
+    """Walk every root. Returns list of video dicts. progress(dirs, found) is called now and then.
+    known: {real path: {"title", "year", "kind"}} for CineHaven's own downloads."""
     found, dirs = [], 0
-    skip_root = os.path.realpath(DOWNLOAD_DIR)          # CineHaven's own downloads live in Library
+    own = os.path.realpath(DOWNLOAD_DIR) + os.sep
+    known = known or {}
+    previous = load()
+    first_seen = {v["path"]: v.get("first_seen", v.get("mtime", 0)) for v in previous}
+    now = time.time()
     seen = set()
     stack = list(roots())
     while stack:
@@ -135,7 +160,7 @@ def scan(progress=None, stop=lambda: False):
                     continue
                 try:
                     if e.is_dir(follow_symlinks=False):
-                        if name not in SKIP_DIRS and os.path.realpath(e.path) != skip_root:
+                        if name not in SKIP_DIRS:
                             stack.append(e.path)
                         continue
                     if not e.is_file(follow_symlinks=False):
@@ -150,10 +175,22 @@ def scan(progress=None, stop=lambda: False):
                 if "sample" in name.lower() and st.st_size < 300 * 1024 * 1024:
                     continue
                 seen.add((st.st_dev, st.st_ino))
-                v = parse(e.path, st.st_size)
-                # sparse file = torrent download that never finished
+                # sparse file = torrent download that hasn't finished
                 incomplete = st.st_blocks * 512 < st.st_size * 0.9
-                v.update(path=e.path, size=st.st_size, mtime=st.st_mtime, incomplete=incomplete)
+                real = os.path.realpath(e.path)
+                if real.startswith(own):
+                    if incomplete:
+                        continue                 # still downloading in CineHaven – shown in Library
+                    v = parse(e.path, st.st_size)
+                    if real in known:
+                        v.update({k: val for k, val in known[real].items() if val})
+                        v["source"] = "cinehaven"
+                else:
+                    v = parse(e.path, st.st_size)
+                v.update(path=e.path, size=st.st_size, mtime=st.st_mtime, incomplete=incomplete,
+                         busy=now - st.st_mtime < 20,           # still being copied / written
+                         # first ever scan: use the file's own date so old videos aren't all "NEW"
+                         first_seen=first_seen.get(e.path, now if previous else st.st_mtime))
                 found.append(v)
         if progress and dirs % 200 == 0:
             progress(dirs, len(found))

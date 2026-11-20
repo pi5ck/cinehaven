@@ -660,6 +660,7 @@ class Window(Adw.ApplicationWindow):
                 if not ok:
                     raise PermissionError("; ".join(problems))
                 meta = {"title": info["title"], "source": "archive.org", "ia_id": r["id"],
+                        "year": r.get("year"), "kind": "documentary" if self.category == "docs" else "movie",
                         "file_name": info["file_name"], "sha1": info["sha1"], "trust": info["verdict"],
                         "reason": info["reason"], "subtitles": info["subtitles"], "added": time.time()}
                 it = self.engine.add_torrent_url(info["torrent_url"], meta)
@@ -1215,6 +1216,7 @@ class Window(Adw.ApplicationWindow):
         def done(ok):
             self.verifying.discard(it.key)
             if ok:
+                self.myvideos.schedule_rescan(2)            # show it in My Videos right away
                 it.meta["finished_notified"] = True
                 self.engine.save_state()
                 self.app.notify(f"“{it.title}” finished downloading")
@@ -1231,6 +1233,7 @@ class Window(Adw.ApplicationWindow):
             return
         it.meta["finished_notified"] = True
         self.engine.save_state()
+        self.myvideos.schedule_rescan(2)                    # show it in My Videos right away
         self.app.notify(f"“{it.title}” finished downloading")
         sha1 = it.meta.get("sha1")
         if sha1 and it.verified is None and it.key not in self.verifying:

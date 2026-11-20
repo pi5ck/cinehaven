@@ -2,7 +2,7 @@ import os
 
 APP_NAME = "CineHaven"
 APP_ID = os.environ.get("CINEHAVEN_APP_ID", "io.github.cinehaven.CineHaven")
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+Linux; streaming torrent player)"
 
 _xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
