@@ -34,11 +34,38 @@ jobs:
             mingw-w64-ucrt-x86_64-python-pip
             mingw-w64-ucrt-x86_64-mpv
             mingw-w64-ucrt-x86_64-ffmpeg
-      - name: Install libtorrent (Python bindings)
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python-setuptools
+            git
+      # MSYS2 ships the libtorrent C++ library but not its Python bindings, so build them
+      - name: Cache libtorrent build
+        id: lt-cache
+        uses: actions/cache@v4
+        with:
+          path: lt-install
+          key: libtorrent-2.1.2-ucrt64-v1
+      - name: Build libtorrent Python bindings
+        if: steps.lt-cache.outputs.cache-hit != 'true'
         run: |
-          pacman -Ss libtorrent || true
-          pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-python-libtorrent-rasterbar \
-            || pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-libtorrent-rasterbar
+          git clone --depth 1 --branch v2.1.2 --recurse-submodules --shallow-submodules https://github.com/arvidn/libtorrent.git lt-src
+          cmake -S lt-src -B lt-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -Dpython-bindings=ON -Dpython-egg-info=OFF -DBUILD_SHARED_LIBS=ON \
+            -Dbuild_tests=OFF -Dbuild_examples=OFF -Dbuild_tools=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/lt-install"
+          cmake --build lt-build
+          cmake --install lt-build
+          mkdir -p lt-install/py
+          find lt-build lt-install -name "libtorrent*.pyd" -exec cp {} lt-install/py/ \;
+          ls -R lt-install | head -50
+      - name: Install libtorrent bindings
+        run: |
+          SITE=$(python -c "import sysconfig; print(sysconfig.get_paths()['platlib'])")
+          cp lt-install/py/libtorrent*.pyd "$SITE/"
+          cp lt-install/bin/*.dll /ucrt64/bin/ 2>/dev/null || true
           python -c "import libtorrent; print('libtorrent', libtorrent.__version__)"
       - name: Install python-mpv
         run: pip install --break-system-packages python-mpv
