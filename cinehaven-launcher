@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""CineHaven launcher with crash guard.
+
+The guard runs the real app as a child process. If the app crashes it is restarted
+automatically; after repeated crashes it restarts in safe mode (software video decoding).
+"""
+import os
+import signal
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+CRASH_SIGNALS = {signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS, signal.SIGILL, signal.SIGFPE}
+
+
+def _setup_paths():
+    for cand in (HERE, os.path.join(HERE, ".."), "/usr/share/cinehaven",
+                 os.path.expanduser("~/.local/share/cinehaven-app")):
+        if os.path.isdir(os.path.join(cand, "cinehaven")):
+            sys.path.insert(0, os.path.abspath(cand))
+            break
+    # Bundled libraries (lets CineHaven run without root-installed python3-libtorrent / python3-mpv)
+    vendor = os.path.join(HERE, "vendor")
+    if os.path.isdir(vendor):
+        import ctypes
+        import glob
+        sys.path.append(vendor)          # system packages win if present
+        for lib in glob.glob(os.path.join(vendor, "lib*.so.*")):
+            try:
+                ctypes.CDLL(lib, mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                pass
+
+
+def _crash_log(msg):
+    d = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "cinehaven")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "cinehaven.log"), "a") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " CRASH-GUARD " + msg + "\n")
+
+
+def _data_dir():
+    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "cinehaven")
+
+
+def _rollback_if_new_version_crashed(ran_for, crashed):
+    """After a self-update: if the new version crashes within 5 minutes, go back to the old one."""
+    marker = os.path.join(_data_dir(), "just-updated")
+    if not os.path.exists(marker):
+        return False
+    if ran_for > 300:
+        os.remove(marker)                    # new version proved itself
+        return False
+    if not crashed:
+        return False
+    app_dir = HERE
+    prev = app_dir + ".prev"
+    if not os.path.isdir(prev):
+        return False
+    broken = app_dir + ".broken"
+    import shutil
+    shutil.rmtree(broken, ignore_errors=True)
+    os.rename(app_dir, broken)
+    os.rename(prev, app_dir)
+    os.remove(marker)
+    _crash_log("New version crashed on start – rolled back to the previous version")
+    return True
+
+
+def guard():
+    args = sys.argv[1:]
+    crashes = []
+    safe = False
+    while True:
+        env = dict(os.environ, CINEHAVEN_CHILD="1")
+        if safe:
+            env["CINEHAVEN_SAFE_MODE"] = "1"
+        started = time.time()
+        rc = subprocess.call([sys.executable, os.path.realpath(__file__), *args], env=env)
+        crashed = (rc < 0 and -rc in CRASH_SIGNALS) or rc == 1
+        if _rollback_if_new_version_crashed(time.time() - started, crashed):
+            crashes, safe, args = [], False, []
+            continue
+        if not crashed:
+            return 0 if rc < 0 else rc
+        now = time.time()
+        crashes = [c for c in crashes if now - c < 600] + [now]
+        why = f"signal {-rc}" if rc < 0 else f"exit code {rc}"
+        _crash_log(f"CineHaven stopped unexpectedly ({why}); crash {len(crashes)} in 10 min")
+        if len(crashes) >= 4:
+            _crash_log("Too many crashes – giving up until the next manual start")
+            subprocess.call(["notify-send", "-i", "io.github.cinehaven.CineHaven", "CineHaven",
+                             "CineHaven keeps stopping. Open it again, or see the log in "
+                             "~/.local/share/cinehaven/cinehaven.log"])
+            return rc
+        safe = len(crashes) >= 2          # second crash in a row → safe mode
+        args = []                          # don't re-open whatever might have caused it
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        _setup_paths()
+        from cinehaven.health import selftest
+        sys.exit(selftest())
+    if os.environ.get("CINEHAVEN_CHILD") != "1" and not os.environ.get("CINEHAVEN_NO_GUARD"):
+        sys.exit(guard())
+    _setup_paths()
+    from cinehaven.app import main
+    sys.exit(main())

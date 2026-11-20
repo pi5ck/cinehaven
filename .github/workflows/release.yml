@@ -1,0 +1,24 @@
+# Push a tag like v1.0.1 → builds the .deb + tarball and publishes a GitHub Release.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the code compiles
+        run: python3 -m py_compile cinehaven/*.py cinehaven-launcher
+      - name: Build packages
+        run: |
+          packaging/build-deb.sh
+          packaging/build-tarball.sh
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.deb dist/*.tar.gz dist/SHA256SUMS \
+            --title "CineHaven ${GITHUB_REF_NAME#v}" --generate-notes

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=CineHaven
+GenericName=Movie Streamer
+Comment=Search, stream and download free movies – plays while it downloads
+Exec=cinehaven %U
+Icon=io.github.cinehaven.CineHaven
+Terminal=false
+Categories=AudioVideo;Video;Player;GTK;
+Keywords=movie;film;torrent;stream;video;player;magnet;
+MimeType=x-scheme-handler/magnet;application/x-bittorrent;video/mp4;video/x-matroska;video/webm;video/x-msvideo;video/quicktime;video/ogg;video/mpeg;
+StartupNotify=true
+StartupWMClass=io.github.cinehaven.CineHaven
