@@ -130,15 +130,18 @@ res = {}
 for name, path in json.loads(sys.argv[1]).items():
     m.loadfile(path)
     t, cur = time.time(), None
-    while time.time() - t < 6:
-        try:
-            cur = m.hwdec_current
+    while time.time() - t < 6:          # decide only once frames are really coming out: mpv names
+        try:                            # the hardware decoder while it tries it, before falling back
             pos = m.time_pos or 0
         except Exception:
             pos = 0
-        if cur and cur != "no" or pos > 0.25:
+        if pos > 0.3:
             break
         time.sleep(0.05)
+    try:
+        cur = m.hwdec_current
+    except Exception:
+        cur = None
     res[name] = cur if cur and cur != "no" else ""
     m.command("stop")
 m.terminate()
@@ -156,7 +159,7 @@ def _make_clips(folder):
         out = os.path.join(folder, f"{name}.mkv")
         for a in ([args, AV1_FALLBACK] if name == "av1" else [args]):
             try:
-                r = subprocess.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=0.6"]
+                r = subprocess.run([exe, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=1.2"]
                                    + a + [out], capture_output=True, timeout=60)
                 if r.returncode == 0 and os.path.getsize(out) > 0:
                     clips[name] = out
