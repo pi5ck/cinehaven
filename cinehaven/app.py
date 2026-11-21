@@ -19,6 +19,7 @@ from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
 from .mylist import CSS as MYLIST_CSS, MyListPage, StreamCard, streaming_docs  # noqa: E402
 from .livetv_ui import CSS as LIVE_CSS, LiveTVPage  # noqa: E402
+from .sport_ui import CSS as SPORT_CSS, SportPage  # noqa: E402
 from .cameras_ui import CSS as CAM_CSS, CamerasPage  # noqa: E402
 from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
 from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage, _Thumb  # noqa: E402
@@ -267,6 +268,10 @@ class Window(Adw.ApplicationWindow):
             self.cameras.on_shown()
         else:
             self.cameras.on_hidden()
+        if name == "sport":
+            self.sport.on_shown()
+        else:
+            self.sport.on_hidden()
         if name == "live":
             self.livetv.on_shown()
         elif name == "youtube":
@@ -400,6 +405,9 @@ class Window(Adw.ApplicationWindow):
         # Live TV – free channels, health-checked
         self.livetv = LiveTVPage(self)
         self.views.add_titled_with_icon(self.livetv, "live", "Live TV", "video-display-symbolic")
+        # Sport – live scores, and the official places to watch each match
+        self.sport = SportPage(self)
+        self.views.add_titled_with_icon(self.sport, "sport", "Sport", "applications-games-symbolic")
         # Cameras – the user's own security cameras, DVRs and NVRs
         self.cameras = CamerasPage(self)
         self.views.add_titled_with_icon(self.cameras, "cameras", "Cameras", "camera-web-symbolic")
@@ -3818,6 +3826,7 @@ class Window(Adw.ApplicationWindow):
         self._stop_translation()
         self.tr_pool.shutdown(wait=False, cancel_futures=True)
         self.livetv.shutdown()
+        self.sport.shutdown()
         self.cameras.shutdown()
         self.myvideos.shutdown()
         self.video.shutdown()
@@ -3849,7 +3858,7 @@ class App(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS + TOGETHER_CSS + PIP_CSS + PROFILES_CSS
+        data = CSS + MYLIST_CSS + LIVE_CSS + SPORT_CSS + LOCAL_CSS + YT_CSS + CAM_CSS + TOGETHER_CSS + PIP_CSS + PROFILES_CSS
         css.load_from_data(data, len(data))
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
