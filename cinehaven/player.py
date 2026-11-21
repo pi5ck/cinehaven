@@ -88,7 +88,10 @@ class VideoView(Gtk.GLArea):
             stream_lavf_o="reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=15",
             network_timeout=30, sub_auto="fuzzy", slang="en,eng", alang="en,eng",
             ytdl=False, osd_level=1, osd_font_size=38, osd_margin_y=90, osd_margin_x=40, volume=100, volume_max=150,
-            user_agent="CineHaven")
+            user_agent="CineHaven",
+            # HDR films on ordinary screens: measure each scene's real brightness and map colours
+            # perceptually, so they look rich instead of washed out (HDR screens get the signal as is)
+            hdr_compute_peak="yes", gamut_mapping_mode="perceptual", target_colorspace_hint="yes")
         self.ctx = None
         self._proc_fn = mpv.MpvGlGetProcAddressFn(_get_proc)
         self.connect("realize", self._on_realize)

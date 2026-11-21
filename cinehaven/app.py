@@ -13,7 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import adapt, ai, cast, catalog, youtube, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
+from . import adapt, ai, cast, catalog, mpris, youtube, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
@@ -33,6 +33,8 @@ CSS = b"""
 .skip-btn { font-weight: bold; font-size: 1.1em; padding: 10px 22px; }
 .poster { border-radius: 10px; background: alpha(currentColor, .08); }
 .recent-thumb { border-radius: 10px; background: alpha(currentColor, .08); }
+.hdr-badge { background: linear-gradient(90deg, #f5a623, #e2367a); color: white; font-weight: 800; }
+.seek-preview > contents { padding: 4px; }
 .recent-progress { margin: 0 8px 6px 8px; }
 .recent-progress trough, .recent-progress progress { min-height: 4px; border-radius: 2px; }
 .recent-x { min-width: 24px; min-height: 24px; padding: 0; opacity: .75; }
@@ -216,6 +218,9 @@ class Window(Adw.ApplicationWindow):
         self.add_controller(tdrop)
 
         self.remote = remote.Remote(lambda c, v: GLib.idle_add(self._remote_command, c, v))
+        self.mpris = mpris.MPRIS(self, APP_ID)              # media keys, headset buttons, desktop media panel
+        GLib.timeout_add(500, self._mpris_tick)
+        self._sleep = None                                   # sleep timer: ("at", time) or ("end", None)
         self.doctor = PlaybackDoctor(self)
         self.dl_doctor = DownloadDoctor(self)
         threading.Thread(target=fixvideo.cleanup, daemon=True).start()
@@ -403,6 +408,12 @@ class Window(Adw.ApplicationWindow):
         self.overlay = ov
         self.video = VideoView()
         ov.set_child(self.video)
+        for prop in ("audio_delay", "sub_scale"):           # remembered sync / size preferences
+            if self.settings.get(prop) is not None:
+                try:
+                    setattr(self.video.mpv, prop, self.settings[prop])
+                except Exception:
+                    pass
 
         # top bar
         top = Gtk.Box(spacing=8, css_classes=["osd", "controls"], valign=Gtk.Align.START)
@@ -413,6 +424,13 @@ class Window(Adw.ApplicationWindow):
         top.append(self.p_title)
         self.p_trust = Gtk.Label(css_classes=["badge", "success"])
         top.append(self.p_trust)
+        self.p_hdr = Gtk.Label(css_classes=["badge", "hdr-badge"], visible=False,
+                               tooltip_text="High dynamic range – shown with tone mapping on this screen")
+        top.append(self.p_hdr)
+        self.sleep_btn = Gtk.MenuButton(icon_name="weather-clear-night-symbolic", tooltip_text="Sleep timer",
+                                        css_classes=["flat"])
+        self.sleep_btn.set_create_popup_func(self._build_sleep_popover)
+        top.append(self.sleep_btn)
         rb_ = Gtk.Button(icon_name="phone-symbolic", tooltip_text="Use your phone as a remote",
                          css_classes=["flat", "circular"])
         rb_.connect("clicked", lambda *_: self.show_remote())
@@ -432,6 +450,7 @@ class Window(Adw.ApplicationWindow):
         self.seek.set_range(0, 1)
         self.seek.connect("change-value", self._on_seek)
         ctl.append(self.seek)
+        self._build_seek_preview()
         row = Gtk.Box(spacing=6)
         self.pp = Gtk.Button(icon_name="media-playback-pause-symbolic", tooltip_text="Play/Pause (Space)",
                              css_classes=["flat", "circular"])
@@ -1241,8 +1260,298 @@ class Window(Adw.ApplicationWindow):
             sw.connect("notify::active", lambda w, _p, k=key: self._set_enhancement(k, w.get_active()))
             row.append(sw)
             box.append(row)
+        box.append(Gtk.Separator(margin_top=6, margin_bottom=2))
+        box.append(Gtk.Label(label="Timing & speed", xalign=0, css_classes=["heading"], margin_top=4))
+        box.append(self._stepper("Subtitle timing", "sub_delay", 0.1, -60, 60,
+                                 lambda v: f"{v:+.1f} s" if abs(v) > 0.04 else "in sync",
+                                 "Subtitles too early? Press +. Too late? Press −  (keys: Z / X)"))
+        box.append(self._stepper("Sound delay", "audio_delay", 0.05, -5, 5,
+                                 lambda v: f"{v:+.2f} s" if abs(v) > 0.01 else "in sync",
+                                 "For Bluetooth headphones and soundbars: lips and voice out of step? "
+                                 "Remembered for next time.", remember="audio_delay"))
+        box.append(self._stepper("Subtitle size", "sub_scale", 0.1, 0.5, 2.5,
+                                 lambda v: f"{round(v * 100)}%", "Remembered for next time.",
+                                 remember="sub_scale"))
+        sp = Gtk.Box(spacing=4, margin_top=4)
+        sp.append(Gtk.Label(label="Speed", xalign=0, hexpand=True))
+        grp = None
+        cur = round(self.video.mpv.speed or 1, 2)
+        for v in (0.75, 1.0, 1.25, 1.5, 2.0):
+            b = Gtk.ToggleButton(label=f"{v:g}×", group=grp, active=abs(cur - v) < 0.01, css_classes=["flat"])
+            grp = grp or b
+            b.connect("toggled", lambda btn, v=v: btn.get_active() and setattr(self.video.mpv, "speed", v))
+            sp.append(b)
+        sp.set_tooltip_text("Voices keep their normal pitch at any speed  (keys: [ and ], Backspace = normal)")
+        box.append(sp)
         pop.set_child(box)
         mb.set_popover(pop)
+
+    def _stepper(self, title, prop, step, lo, hi, fmt, tip, remember=None):
+        """A row with − value + for an mpv property."""
+        row = Gtk.Box(spacing=4, tooltip_text=tip)
+        row.append(Gtk.Label(label=title, xalign=0, hexpand=True))
+        m = self.video.mpv
+        val = Gtk.Label(width_chars=8, css_classes=["numeric", "dim-label"])
+
+        def show():
+            try:
+                val.set_label(fmt(float(getattr(m, prop) or 0)))
+            except Exception:
+                val.set_label("–")
+
+        def change(d):
+            try:
+                v = round(min(hi, max(lo, float(getattr(m, prop) or 0) + d)), 2)
+                setattr(m, prop, v)
+                if remember:
+                    self.settings[remember] = v
+                    save_settings(self.settings)
+            except Exception:
+                pass
+            show()
+        minus = Gtk.Button(label="−", css_classes=["flat", "circular", "nudge"])
+        minus.connect("clicked", lambda *_: change(-step))
+        plus = Gtk.Button(label="+", css_classes=["flat", "circular", "nudge"])
+        plus.connect("clicked", lambda *_: change(step))
+        for w in (minus, val, plus):
+            row.append(w)
+        show()
+        return row
+
+    # ── HDR ─────────────────────────────────────────────────────────────
+    def _update_hdr_badge(self, m):
+        try:
+            vp = m.video_params or {}
+        except Exception:
+            vp = {}
+        gamma, matrix = vp.get("gamma"), vp.get("colormatrix") or vp.get("matrix")
+        name = ("Dolby Vision" if matrix == "dolbyvision" else "HDR10" if gamma == "pq"
+                else "HLG HDR" if gamma == "hlg" else None)
+        self.p_hdr.set_label(name or "")
+        self.p_hdr.set_visible(bool(name))
+
+    # ── seek-bar preview pictures ────────────────────────────────────────
+    def _build_seek_preview(self):
+        pop = Gtk.Popover(autohide=False, has_arrow=True, position=Gtk.PositionType.TOP, can_focus=False,
+                          css_classes=["seek-preview"])
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.prev_pic = _Thumb(240, 135)
+        box.append(self.prev_pic)
+        self.prev_lbl = Gtk.Label(css_classes=["numeric", "heading"])
+        box.append(self.prev_lbl)
+        pop.set_child(box)
+        pop.set_parent(self.seek)
+        self.prev_pop = pop
+        self._prev = {"src": None, "cache": {}, "want": None, "busy": False, "timer": None}
+        mo = Gtk.EventControllerMotion()
+        mo.connect("motion", self._seek_hover)
+        mo.connect("leave", lambda *_: pop.popdown())
+        self.seek.add_controller(mo)
+
+    def _preview_source(self):
+        """A file or local stream address ffmpeg can grab frames from quickly (not live/YouTube)."""
+        if self.live or self.cast_dev:
+            return None
+        if self.local_path and os.path.isfile(self.local_path):
+            return self.local_path
+        try:
+            p = self.video.mpv.path or ""
+        except Exception:
+            return None
+        return p if p.startswith("http://127.0.0.1") and "/" in p[17:] and not p.startswith("edl") else None
+
+    def _seek_hover(self, _c, x, _y):
+        try:
+            dur = self.video.mpv.duration
+        except Exception:
+            dur = None
+        if not dur or self.live:
+            self.prev_pop.popdown()
+            return
+        w = self.seek.get_width()
+        pad = 10                                            # the slider's own margins
+        t = max(0.0, min(dur, (x - pad) / max(1, w - 2 * pad) * dur))
+        self.prev_lbl.set_label(fmt_time(t))
+        r = Gdk.Rectangle()
+        r.x, r.y, r.width, r.height = int(x), 0, 1, 1
+        self.prev_pop.set_pointing_to(r)
+        src = self._preview_source()
+        self.prev_pic.set_visible(bool(src))
+        if not self.prev_pop.get_visible():
+            self.prev_pop.popup()
+        if not src:
+            return
+        st = self._prev
+        if st["src"] != src:
+            st.update(src=src, cache={})
+        key = int(t // 5) * 5                               # a picture every 5 seconds is plenty
+        if key in st["cache"]:
+            self.prev_pic.set_paintable(st["cache"][key])
+            return
+        st["want"] = key
+        if st["timer"]:
+            GLib.source_remove(st["timer"])
+        st["timer"] = GLib.timeout_add(120, self._grab_preview)
+
+    def _grab_preview(self):
+        st = self._prev
+        st["timer"] = None
+        if st["busy"] or st["want"] is None:
+            return False
+        key, src = st["want"], st["src"]
+        st["busy"] = True
+        exe = skip._ffmpeg()
+
+        def work():
+            data = None
+            if exe:
+                try:
+                    r = subprocess.run([exe, "-v", "error", "-ss", str(key + 2), "-i", src, "-frames:v", "1",
+                                        "-vf", "scale=480:-2", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2", "-"],
+                                       capture_output=True, timeout=8)
+                    data = r.stdout if r.returncode == 0 and r.stdout else None
+                except Exception:
+                    data = None
+            GLib.idle_add(done, data)
+
+        def done(data):
+            st["busy"] = False
+            if data and st["src"] == src:
+                try:
+                    tex = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+                    st["cache"][key] = tex
+                    if st["want"] == key:
+                        self.prev_pic.set_paintable(tex)
+                except GLib.Error:
+                    pass
+            if st["want"] != key and st["want"] is not None:
+                self._grab_preview()                        # the pointer moved on meanwhile
+            return False
+        threading.Thread(target=work, daemon=True).start()
+        return False
+
+    # ── sleep timer ──────────────────────────────────────────────────────
+    def _build_sleep_popover(self, mb):
+        pop = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6, margin_bottom=6,
+                      margin_start=6, margin_end=6)
+        box.append(Gtk.Label(label="Sleep timer", css_classes=["heading"], xalign=0, margin_bottom=4))
+        if self._sleep:
+            kind, at = self._sleep
+            left = "at the end of this film" if kind == "end" else f"in {max(1, round((at - time.time()) / 60))} min"
+            box.append(Gtk.Label(label=f"Pausing {left}", xalign=0, css_classes=["dim-label", "caption"]))
+        for label, mins in (("15 minutes", 15), ("30 minutes", 30), ("45 minutes", 45), ("1 hour", 60),
+                            ("1½ hours", 90), ("End of this film", "end"), ("Off", None)):
+            b = Gtk.Button(label=label, css_classes=["flat"])
+            b.get_child().set_xalign(0)
+            b.connect("clicked", lambda _b, v=mins: (pop.popdown(), self.set_sleep(v)))
+            box.append(b)
+        pop.set_child(box)
+        mb.set_popover(pop)
+
+    def set_sleep(self, mins):
+        if mins is None:
+            self._sleep = None
+            self.toast("Sleep timer off")
+        elif mins == "end":
+            self._sleep = ("end", None)
+            self.toast("CineHaven will stop at the end of this film")
+        else:
+            self._sleep = ("at", time.time() + mins * 60)
+            self.toast(f"CineHaven will fade out and pause in {mins} minutes")
+        self._sleep_vol = None
+        self.sleep_btn.set_icon_name("alarm-symbolic" if self._sleep else "weather-clear-night-symbolic")
+
+    def _sleep_tick(self, m, pos, dur, paused):
+        if not self._sleep or paused:
+            return
+        kind, at = self._sleep
+        if kind == "end":
+            if dur and pos is not None and dur - pos < 30:
+                at = time.time() + (dur - pos)
+            else:
+                return
+        left = at - time.time()
+        if left <= 0:
+            m.pause = True
+            if getattr(self, "_sleep_vol", None) is not None:
+                m.volume = self._sleep_vol
+            self._sleep = None
+            self._sleep_vol = None
+            self.sleep_btn.set_icon_name("weather-clear-night-symbolic")
+            self.toast("Sleep timer: paused. Sleep well 🌙")
+        elif left < 30:                                     # fade out over the last 30 seconds
+            if getattr(self, "_sleep_vol", None) is None:
+                self._sleep_vol = m.volume
+            m.volume = self._sleep_vol * max(0.0, left / 30)
+
+    # ── desktop media controls (MPRIS) ───────────────────────────────────
+    def mpris_state(self):
+        if self.root.get_visible_child_name() != "player":
+            return {"status": "Stopped"}
+        m = self.video.mpv
+        try:
+            paused, pos, dur = m.pause, m.time_pos, m.duration
+        except Exception:
+            paused, pos, dur = True, None, None
+        h = self.settings.get("history", [])
+        art = h[0].get("thumb") if h and h[0].get("key") == self.resume_key else None
+        return {"status": "Paused" if paused else "Playing", "title": self.p_title.get_label(),
+                "length": None if self.live else dur, "position": pos, "art": art, "rate": m.speed or 1.0,
+                "volume": self.vol.get_value(), "can_next": bool(self._skip.get("next")), "live": self.live}
+
+    def mpris_command(self, c, v):
+        GLib.idle_add(self._mpris_do, c, v)
+
+    def _mpris_do(self, c, v):
+        in_player = self.root.get_visible_child_name() == "player"
+        m = self.video.mpv
+        try:
+            if c == "raise":
+                self.present()
+            elif c == "quit":
+                self.close()
+            elif c == "open" and v:
+                self.present()
+                self.open_any(v[7:] if v.startswith("file://") else v)
+            elif not in_player:
+                if c in ("play", "toggle"):
+                    h = self.settings.get("history", [])
+                    if h:
+                        self._open_recent(h[0])             # play key with nothing on: carry on the last film
+            elif c == "toggle":
+                self.toggle_pause()
+            elif c == "play":
+                m.pause = False
+            elif c == "pause":
+                m.pause = True
+            elif c == "stop":
+                self.leave_player()
+            elif c == "next":
+                if self._skip.get("next"):
+                    self._play_next()
+                else:
+                    self.seek_rel(30)
+            elif c == "previous":
+                self.seek_rel(-10)
+            elif c == "seek_rel":
+                self.seek_rel(v)
+            elif c == "seek_abs":
+                self._on_seek(None, None, float(v))
+            elif c == "volume":
+                self.vol.set_value(max(0, min(150, v)))
+            elif c == "rate":
+                m.speed = max(0.25, min(4, v))
+        except Exception as e:
+            health.log.info("Media key %s failed: %s", c, e)
+        return False
+
+    def _mpris_tick(self):
+        try:
+            self.mpris.update(**self.mpris_state())
+        except Exception:
+            pass
+        return True
 
     ON_BY_DEFAULT = ("auto_skip", "autoplay_next")
 
@@ -1259,6 +1568,7 @@ class Window(Adw.ApplicationWindow):
 
     def _apply_enhancements(self):
         m = self.video.mpv
+        self._update_hdr_badge(m)
         out_h = self.video.get_height() * self.video.get_scale_factor()
         if getattr(self, "_pic_level", None) is None:
             self._pic_cls = adapt.video_class(m)
@@ -1764,6 +2074,10 @@ class Window(Adw.ApplicationWindow):
             "bracketleft": lambda: setattr(m, "speed", max(0.25, m.speed - 0.1)),
             "bracketright": lambda: setattr(m, "speed", min(4, m.speed + 0.1)),
             "BackSpace": lambda: setattr(m, "speed", 1.0),
+            "z": lambda: (setattr(m, "sub_delay", round((m.sub_delay or 0) - 0.1, 2)),
+                          m.show_text(f"Subtitle timing {m.sub_delay:+.1f} s")),
+            "x": lambda: (setattr(m, "sub_delay", round((m.sub_delay or 0) + 0.1, 2)),
+                          m.show_text(f"Subtitle timing {m.sub_delay:+.1f} s")),
         }
         if k == "Escape":
             self.unfullscreen() if self.is_fullscreen() else self.leave_player()
@@ -1811,6 +2125,7 @@ class Window(Adw.ApplicationWindow):
             self.time_lbl.set_label(f"{fmt_time(pos or 0)} / {fmt_time(dur)}")
         if not self.live:
             self._skip_tick(m, pos, dur, paused)
+        self._sleep_tick(m, pos, dur, paused)
         try:
             key = (m.path, bool(m.video_params), bool(m.audio_params))
         except Exception:
@@ -2463,7 +2778,7 @@ class Window(Adw.ApplicationWindow):
     def _offer_next(self, pos, dur, paused):
         st = self._skip
         name = os.path.splitext(os.path.basename(st["next"]))[0]
-        if not self._setting("autoplay_next"):
+        if not self._setting("autoplay_next") or (self._sleep and self._sleep[0] == "end"):
             self.next_btn.set_label("Next episode ▶")
             self.next_btn.set_tooltip_text(name)
             self.next_btn.set_visible(True)
@@ -3006,6 +3321,7 @@ class Window(Adw.ApplicationWindow):
                 pass
         cast.files.stop()
         self.remote.stop()
+        self.mpris.stop()
         self._remember_position()
         save_settings(self.settings)
         self._stop_translation()

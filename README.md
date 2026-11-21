@@ -77,8 +77,8 @@ The **Cameras** tab shows your own IP cameras, DVRs and NVRs in a live grid. Cli
 **Ubuntu 24.04+ / Debian 13+ / Linux Mint 22+** (recommended – keeps itself up to date):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.10.tar.gz
-tar xzf cinehaven-1.0.10.tar.gz && cd cinehaven-1.0.10
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.11.tar.gz
+tar xzf cinehaven-1.0.11.tar.gz && cd cinehaven-1.0.11
 ./install.sh
 ```
 
@@ -87,8 +87,8 @@ The installer asks for your password once to add the system libraries (GTK, libt
 **Or use the .deb package** (Ubuntu/Debian):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.10_all.deb
-sudo apt install ./cinehaven_1.0.10_all.deb
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.11_all.deb
+sudo apt install ./cinehaven_1.0.11_all.deb
 ```
 
 The .deb version tells you when an update is out, but you install the update yourself. The install.sh version updates itself.
@@ -111,6 +111,15 @@ GTK 4, libadwaita ≥ 1.5, python3-libtorrent ≥ 2.0, python3-mpv and libmpv. `
 
 ### Problems?
 Open *Menu → Help & diagnostics → Copy report* and paste the report into a [new issue](https://github.com/pi5ck/cinehaven/issues).
+
+## Watching comfort
+
+* **HDR done right:** HDR10, HLG and Dolby Vision films get a badge, and on ordinary screens each scene's real brightness is measured and mapped so colours look rich instead of washed out.
+* **Media keys and desktop controls:** keyboard play/pause keys, Bluetooth headset buttons, and the desktop's media panel and lock screen control CineHaven and show what's playing (Linux). The play key with nothing playing carries on your last film.
+* **Preview pictures:** hover over the progress bar to see the scene at that point.
+* **Sync fixes** (CC menu): subtitle timing (also Z / X keys), sound delay for Bluetooth headphones and soundbars, and subtitle size. The last two are remembered.
+* **Playback speed** from 0.75× to 2×, with voices at their normal pitch.
+* **Sleep timer** (moon button): 15 minutes to 1½ hours, or the end of the film. The sound fades out gently before it pauses.
 
 ## Keyboard shortcuts (in the player)
 
