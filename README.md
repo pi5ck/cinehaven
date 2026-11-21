@@ -112,6 +112,18 @@ GTK 4, libadwaita ≥ 1.5, python3-libtorrent ≥ 2.0, python3-mpv and libmpv. `
 ### Problems?
 Open *Menu → Help & diagnostics → Copy report* and paste the report into a [new issue](https://github.com/pi5ck/cinehaven/issues).
 
+## Profiles and kids mode
+
+Everyone in the house gets their own profile: the avatar button at the top right, or **Who's watching?** when CineHaven starts. Each profile has its own Recently played and resume points.
+
+**Kids profiles** get a safe, simple CineHaven:
+* **Discover** shows only cartoons and family films that passed the rights check. Grown-up themes and old cartoons with racist caricatures are filtered out. Parents can also press **Hide from kids** on any title.
+* **Live TV** shows children's channels only. YouTube, My Videos, Cameras, My List, the Library and opening links or files are all hidden.
+* **Optional daily screen time:** a warning comes at 5 minutes left, then "That's all for today". A grown-up can add 30 minutes with the PIN.
+* Leaving kids mode or changing profiles needs the **grown-ups' PIN**. Kids mode stays on after a restart.
+
+Old public-domain cartoons aren't age-rated, so the filters can't be perfect. It's worth checking what's shown and hiding anything you'd rather not.
+
 ## Where films are kept
 
 Like uTorrent or Transmission, everything CineHaven downloads goes into one **CineHaven** folder, including repaired copies of videos that wouldn't play. By default it's in your Videos folder. Menu → **Where films are kept…** moves the whole library to any drive with free space: an internal partition, a USB disk or a network share. Films and downloads in progress all move safely, and Recently played, resume points and My Videos follow. CineHaven opens that drive by itself each time it starts. If the drive is unplugged, the films wait for it instead of downloading again.

@@ -107,6 +107,13 @@ DOC_FILTER = ("(subject:documentary OR subject:documentaries OR collection:FedFl
               " OR collection:prelinger)")
 
 
+KIDS_FILTER = ("(collection:classic_cartoons OR collection:animationandcartoons OR subject:(children OR \"children's"
+               " films\" OR \"family film\" OR \"fairy tales\" OR \"fairy tale\" OR cartoon OR cartoons))"
+               " AND -subject:(horror OR adult OR erotic OR erotica OR sex OR sexuality OR nudity OR violence OR war"
+               " OR crime OR noir OR exploitation OR drugs OR murder OR zombie OR propaganda OR \"world war\")"
+               " AND -collection:(film_noir OR sci-fi_horror OR prelinger OR FedFlix)")
+
+
 def search(query, page=1, rows=40, category="movies"):
     q = query.strip()
     base = ("mediatype:movies AND -collection:movie_trailers AND -collection:movie_trailers_unsorted"
@@ -127,6 +134,9 @@ def search(query, page=1, rows=40, category="movies"):
         return json.loads(fetch(SEARCH_URL + "?" + urllib.parse.urlencode(params))).get(
             "response", {}).get("docs", [])
 
+    if category == "kids":                # cartoons and family films only, nothing grown-up
+        base = ("mediatype:movies AND -collection:movie_trailers AND -collection:movie_trailers_unsorted"
+                f" AND {KIDS_FILTER}")
     if category == "docs":
         base = ("mediatype:movies AND -collection:movie_trailers AND -collection:movie_trailers_unsorted"
                 f" AND {DOC_FILTER}")
@@ -135,6 +145,8 @@ def search(query, page=1, rows=40, category="movies"):
                      " OR collection:silent_films OR collection:nasa)", True)
         seen = {d["identifier"] for d in docs}
         docs += [d for d in query("collection:nasa OR collection:FedFlix", True) if d["identifier"] not in seen]
+    elif not safe and category == "kids":
+        docs = query("collection:classic_cartoons OR collection:animationandcartoons", True)
     elif not safe:   # home page: the most-watched feature films and open movies
         docs = query("collection:feature_films OR collection:open-film-trust OR collection:silent_films", True)
     else:

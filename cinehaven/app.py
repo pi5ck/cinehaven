@@ -24,6 +24,8 @@ from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
 from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage, _Thumb  # noqa: E402
 from .together_ui import CSS as TOGETHER_CSS, Together  # noqa: E402
 from .pip import CSS as PIP_CSS, PipShelf  # noqa: E402
+from .profiles_ui import CSS as PROFILES_CSS, ProfilesUI  # noqa: E402
+from . import profiles  # noqa: E402
 
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
@@ -214,6 +216,8 @@ class Window(Adw.ApplicationWindow):
         self._full_size = None
         self.together_media = None                           # what's playing, as friends' CineHaven can open it
         self.together = Together(self)
+        self.kid = False
+        self.profiles = ProfilesUI(self)                     # everyone's own history; kids mode
         self._browse_w = self._build_browse()
         self._player_w = self._build_player()
         self.stage = Gtk.Overlay()
@@ -254,10 +258,8 @@ class Window(Adw.ApplicationWindow):
         GLib.timeout_add_seconds(45, lambda: (youtube.update_in_background(), False)[1])   # keep yt-dlp current
         GLib.timeout_add(250, self._player_tick)
         self.connect("close-request", self._on_close)
-        if self.category == "docs":
-            self._set_category("docs")
-        else:
-            self.run_search("")
+        self.profiles.apply()                                # also runs the first search
+        GLib.timeout_add(700, lambda: (self.profiles.maybe_ask_at_start(), False)[1])
 
     def _on_view_changed(self, views, _p):
         name = views.get_visible_child_name()
@@ -286,6 +288,9 @@ class Window(Adw.ApplicationWindow):
         ob = Gtk.MenuButton(icon_name="list-add-symbolic", menu_model=open_menu,
                             tooltip_text="Open link, torrent or video")
         hb.pack_start(ob)
+        self.open_btn = ob
+        self.kids_badge = Gtk.Label(label="KIDS", css_classes=["kids-badge"], visible=False, valign=Gtk.Align.CENTER)
+        hb.pack_start(self.kids_badge)
 
         menu = Gio.Menu()
         menu.append("English movies only", "win.english-only")
@@ -299,7 +304,9 @@ class Window(Adw.ApplicationWindow):
         menu.append("Check for updates", "win.check-updates")
         menu.append("Help & diagnostics", "win.diagnostics")
         menu.append(f"About {APP_NAME}", "win.about")
-        hb.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, primary=True))
+        self.menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, primary=True)
+        hb.pack_end(self.menu_btn)
+        hb.pack_end(self.profiles.button)
         tv.add_top_bar(hb)
 
         for name, cb in (("open-magnet", self.ask_magnet), ("open-torrent", self.pick_torrent),
@@ -331,12 +338,14 @@ class Window(Adw.ApplicationWindow):
         self.search = Gtk.SearchEntry(placeholder_text="Search free movies — classics, cartoons, noir, open films…",
                                       css_classes=["big-search"], search_delay=450)
         self.search.connect("search-changed", lambda e: self.run_search(e.get_text()))
-        self.search.connect("activate", lambda e: self.play_youtube(e.get_text()) if youtube.is_link(e.get_text())
+        self.search.connect("activate", lambda e: self.play_youtube(e.get_text())
+                            if youtube.is_link(e.get_text()) and not self.kid
                             else self.run_search(e.get_text()))
         clamp.set_child(self.search)
         disc.append(clamp)
         self.category = self.settings.get("discover_category", "movies")
         cats = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER, margin_bottom=6)
+        self.cat_box = cats
         grp = None
         self.cat_btns = {}
         for key, label in (("movies", "🎬 Movies"), ("docs", "🌍 Documentaries")):
@@ -861,7 +870,7 @@ class Window(Adw.ApplicationWindow):
         gen = self.search_gen
         cat = getattr(self, "category", "movies")
         self.disc_stack.set_visible_child_name("loading")
-        noun = "documentaries" if cat == "docs" else "movies"
+        noun = "documentaries" if cat == "docs" else "cartoons and family films" if cat == "kids" else "movies"
         self.status_lbl.set_label("Searching…" if text else f"Popular free {noun}")
         docs_home = cat == "docs" and not text.strip()
         self.doc_shelf.set_visible(docs_home)
@@ -869,7 +878,7 @@ class Window(Adw.ApplicationWindow):
         self.free_lbl.set_label("Free to watch right here – public domain")
         if docs_home and hasattr(self, "mylist"):
             self._load_doc_shelf()
-        if hasattr(self, "web_box"):
+        if hasattr(self, "web_box") and not self.kid:
             self._search_web(gen, text)
 
         def work():
@@ -892,12 +901,19 @@ class Window(Adw.ApplicationWindow):
         shown = [r for r in res if r["verdict"] != catalog.BLOCKED and (show_unv or r["verdict"] != catalog.UNVERIFIED)]
         if self.settings.get("english_only", True):
             shown = [r for r in shown if r.get("english") is not False]
+        if self.kid:                 # kids: only checked, rights-cleared, family-safe titles
+            hidden = set(self.settings.get("kids_hidden") or [])
+            shown = [r for r in shown if r["verdict"] in (catalog.VERIFIED, catalog.LIKELY_OK)
+                     and profiles.kid_safe(r, hidden)]
         hidden_blocked = sum(1 for r in res if r["verdict"] == catalog.BLOCKED)
         hidden_unv = sum(1 for r in res if r["verdict"] == catalog.UNVERIFIED) if not show_unv else 0
+        if self.kid:
+            hidden_blocked = hidden_unv = 0
         self.flow.remove_all()
         for r in shown:
             self.flow.append(MovieCard(self, r))
-        noun = "documentaries" if getattr(self, "category", "movies") == "docs" else "movies"
+        cat = getattr(self, "category", "movies")
+        noun = "documentaries" if cat == "docs" else "cartoons and family films" if cat == "kids" else "movies"
         bits = [f"{len(shown)} free {noun}" if text else f"Popular free {noun}"]
         if hidden_blocked:
             bits.append(f"{hidden_blocked} unauthorised uploads hidden")
@@ -976,6 +992,22 @@ class Window(Adw.ApplicationWindow):
         dl.connect("clicked", lambda *_: (d.close(), self.watch_ia(r, play=False)))
         btns.append(watch)
         btns.append(dl)
+        if not self.kid and any(p.get("kid") for p in profiles.all_(self.settings)):
+            hidden = self.settings.setdefault("kids_hidden", [])
+            hk = Gtk.ToggleButton(label="Hidden from kids" if r["id"] in hidden else "Hide from kids",
+                                  active=r["id"] in hidden, css_classes=["pill", "flat"],
+                                  tooltip_text="Keep this title out of kids profiles")
+
+            def toggled(b, rid=r["id"]):
+                h = self.settings.setdefault("kids_hidden", [])
+                if b.get_active() and rid not in h:
+                    h.append(rid)
+                elif not b.get_active() and rid in h:
+                    h.remove(rid)
+                b.set_label("Hidden from kids" if b.get_active() else "Hide from kids")
+                save_settings(self.settings)
+            hk.connect("toggled", toggled)
+            btns.append(hk)
         col.append(btns)
         box.append(col)
         sc = Gtk.ScrolledWindow(propagate_natural_height=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -1130,6 +1162,8 @@ class Window(Adw.ApplicationWindow):
 
     # ── player control ───────────────────────────────────────────────────
     def enter_player(self, title, item):
+        if self.kid:
+            self.profiles.check_before_play()                 # screen time used up → "That's all for today"
         if self.mini == "corner" and self.root.get_visible_child_name() == "player":
             src = self._pip_capture()                         # the corner film carries on in a tile of its own
             if src:
@@ -2573,6 +2607,7 @@ class Window(Adw.ApplicationWindow):
         if not self.live:
             self._skip_tick(m, pos, dur, paused)
         self._sleep_tick(m, pos, dur, paused)
+        self.profiles.tick(bool(pos) and not paused)
         try:
             key = (m.path, bool(m.video_params), bool(m.audio_params))
         except Exception:
@@ -3605,6 +3640,8 @@ class Window(Adw.ApplicationWindow):
         save_settings(self.settings)
 
     def _paste_link(self):
+        if self.kid:
+            return
         def got(c, res):
             try:
                 t = (c.read_text_finish(res) or "").strip()
@@ -3642,6 +3679,9 @@ class Window(Adw.ApplicationWindow):
         dlg.present(self)
 
     def open_any(self, arg):
+        if self.kid:
+            self.toast("Ask a grown-up to open that")
+            return
         if youtube.is_link(arg) and not os.path.exists(arg):
             self.play_youtube(arg)
         elif normalize_magnet(arg) and not os.path.exists(arg):
@@ -3652,6 +3692,8 @@ class Window(Adw.ApplicationWindow):
             self.play_local(arg)
 
     def _on_drop(self, _t, value, _x, _y):
+        if self.kid:
+            return False
         for f in value.get_files():
             p = f.get_path()
             if p:
@@ -3807,7 +3849,7 @@ class App(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS + TOGETHER_CSS + PIP_CSS
+        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS + TOGETHER_CSS + PIP_CSS + PROFILES_CSS
         css.load_from_data(data, len(data))
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)

@@ -80,6 +80,8 @@ class LiveTVPage(Gtk.Box):
         sc = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
         sc.set_child(chips)
         top.append(sc)
+        self.chip_bar = sc
+        self.kids = False
         self.filter = Gtk.SearchEntry(placeholder_text="Filter channels by name…")
         self.filter.connect("search-changed", lambda *_: self.flow.invalidate_filter())
         c = Adw.Clamp(maximum_size=520)
@@ -130,6 +132,19 @@ class LiveTVPage(Gtk.Box):
         q = self.filter.get_text().strip().lower()
         return not q or q in child.get_child().ch["name"].lower()
 
+    def set_kids(self, kid):
+        """Kids profiles: children's channels only, no other tabs or countries."""
+        self.kids = kid
+        self.chip_bar.set_visible(not kid)
+        self.filter.set_placeholder_text("Find a channel…" if kid else "Filter channels by name…")
+        want = "kids" if kid else (self.win.settings.get("live_section") or f"country:{self.home[0]}")
+        if want == "kids" and not kid:
+            want = f"country:{self.home[0]}"
+        if want in self.chips:
+            self.chips[want].set_active(True)
+        if want != self.section:
+            self.show_section(want)
+
     def _fill_world(self):
         from .watch import COUNTRIES
         counts = {}
@@ -155,6 +170,8 @@ class LiveTVPage(Gtk.Box):
             self.show_section(f"country:{cc}")
 
     def show_section(self, key):
+        if self.kids and key != "kids":
+            key = "kids"
         self.section = key
         self.win.settings["live_section"] = key
         if self.index is None:
