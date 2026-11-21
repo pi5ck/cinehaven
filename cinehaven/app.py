@@ -22,6 +22,7 @@ from .livetv_ui import CSS as LIVE_CSS, LiveTVPage  # noqa: E402
 from .cameras_ui import CSS as CAM_CSS, CamerasPage  # noqa: E402
 from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
 from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage, _Thumb  # noqa: E402
+from .together_ui import CSS as TOGETHER_CSS, Together  # noqa: E402
 
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
@@ -33,6 +34,10 @@ CSS = b"""
 .skip-btn { font-weight: bold; font-size: 1.1em; padding: 10px 22px; }
 .poster { border-radius: 10px; background: alpha(currentColor, .08); }
 .recent-thumb { border-radius: 10px; background: alpha(currentColor, .08); }
+.mini-player { border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.45); }
+.mini-bar { background: linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,.15) 40%, rgba(0,0,0,.55)); color: white; }
+.mini-pp { min-width: 48px; min-height: 48px; }
+.mini-prog trough, .mini-prog progress { min-height: 3px; border-radius: 0; }
 .hdr-badge { background: linear-gradient(90deg, #f5a623, #e2367a); color: white; font-weight: 800; }
 .seek-preview > contents { padding: 4px; }
 .recent-progress { margin: 0 8px 6px 8px; }
@@ -201,10 +206,21 @@ class Window(Adw.ApplicationWindow):
 
         self.toasts = Adw.ToastOverlay()
         self.set_content(self.toasts)
-        self.root = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
-        self.toasts.set_child(self.root)
-        self.root.add_named(self._build_browse(), "browse")
-        self.root.add_named(self._build_player(), "player")
+        # The player floats above the browse pages, so it can shrink into a corner (picture-in-picture)
+        # without the video ever being torn down.
+        self.root = _Modes(self)
+        self.mini = None                                     # None | "corner" | "window"
+        self._full_size = None
+        self.together_media = None                           # what's playing, as friends' CineHaven can open it
+        self.together = Together(self)
+        self._browse_w = self._build_browse()
+        self._player_w = self._build_player()
+        self.stage = Gtk.Overlay()
+        self.stage.set_child(self._browse_w)
+        self.stage.add_overlay(self._player_w)
+        self.stage.set_measure_overlay(self._player_w, True)
+        self.toasts.set_child(self.stage)
+        self._set_mode("browse")
 
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self._on_key)
@@ -268,6 +284,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("English movies only", "win.english-only")
         menu.append("Auto English subtitles", "win.auto-english")
         menu.append("Show unverified titles", "win.show-unverified")
+        menu.append("Watch together…", "win.together")
         menu.append("Phone remote", "win.phone-remote")
         menu.append("Video technology", "win.video-tech")
         menu.append("Open downloads folder", "win.open-downloads")
@@ -282,6 +299,7 @@ class Window(Adw.ApplicationWindow):
                          ("open-youtube", self.ask_youtube),
                          ("diagnostics", self.show_diagnostics),
                          ("phone-remote", lambda *_: self.show_remote()),
+                         ("together", lambda *_: self.together.show()),
                          ("video-tech", lambda *_: self.show_tech()),
                          ("check-updates", lambda *_: self.check_updates(manual=True)),
                          ("open-downloads", lambda *_: Gio.AppInfo.launch_default_for_uri(
@@ -431,6 +449,11 @@ class Window(Adw.ApplicationWindow):
                                         css_classes=["flat"])
         self.sleep_btn.set_create_popup_func(self._build_sleep_popover)
         top.append(self.sleep_btn)
+        top.append(self.together.button)
+        pip = Gtk.Button(icon_name="view-restore-symbolic", css_classes=["flat", "circular"],
+                         tooltip_text="Picture-in-picture: keep watching in a corner while you browse (I)")
+        pip.connect("clicked", lambda *_: self.mini_player("corner"))
+        top.append(pip)
         rb_ = Gtk.Button(icon_name="phone-symbolic", tooltip_text="Use your phone as a remote",
                          css_classes=["flat", "circular"])
         rb_.connect("clicked", lambda *_: self.show_remote())
@@ -492,6 +515,44 @@ class Window(Adw.ApplicationWindow):
         self.bot_rev = Gtk.Revealer(child=ctl, valign=Gtk.Align.END, reveal_child=True,
                                     transition_type=Gtk.RevealerTransitionType.CROSSFADE)
         ov.add_overlay(self.bot_rev)
+
+        # picture-in-picture controls (shown on hover while small)
+        mb_ = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["mini-bar"])
+        self.mini_title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["caption-heading"],
+                                    margin_start=10, margin_end=10, margin_top=8)
+        mb_.append(self.mini_title)
+        mid = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, vexpand=True)
+        b = Gtk.Button(icon_name="media-seek-backward-symbolic", tooltip_text="Back 10 s",
+                       css_classes=["circular", "osd"])
+        b.connect("clicked", lambda *_: self.seek_rel(-10))
+        mid.append(b)
+        self.mini_pp = Gtk.Button(icon_name="media-playback-pause-symbolic", tooltip_text="Play/Pause",
+                                  css_classes=["circular", "osd", "mini-pp"])
+        self.mini_pp.connect("clicked", lambda *_: self.toggle_pause())
+        mid.append(self.mini_pp)
+        b = Gtk.Button(icon_name="media-seek-forward-symbolic", tooltip_text="Forward 30 s",
+                       css_classes=["circular", "osd"])
+        b.connect("clicked", lambda *_: self.seek_rel(30))
+        mid.append(b)
+        mb_.append(mid)
+        bot = Gtk.Box(spacing=4, margin_start=6, margin_end=6, margin_bottom=6)
+        bot.append(Gtk.Box(hexpand=True))
+        self.mini_swap = Gtk.Button(css_classes=["circular", "osd"])
+        self.mini_swap.connect("clicked", lambda *_: self.mini_player("window" if self.mini == "corner" else "corner"))
+        bot.append(self.mini_swap)
+        b = Gtk.Button(icon_name="view-fullscreen-symbolic", tooltip_text="Back to the full player (double-click)",
+                       css_classes=["circular", "osd"])
+        b.connect("clicked", lambda *_: self.expand_player())
+        bot.append(b)
+        b = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Stop watching", css_classes=["circular", "osd"])
+        b.connect("clicked", lambda *_: self.leave_player())
+        bot.append(b)
+        mb_.append(bot)
+        self.mini_rev = Gtk.Revealer(child=mb_, transition_type=Gtk.RevealerTransitionType.CROSSFADE,
+                                     reveal_child=False, visible=False)
+        ov.add_overlay(self.mini_rev)
+        self.mini_prog = Gtk.ProgressBar(valign=Gtk.Align.END, css_classes=["mini-prog"], visible=False)
+        ov.add_overlay(self.mini_prog)
 
         # buffering box
         bb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, css_classes=["osd", "buffer-box"],
@@ -1061,6 +1122,7 @@ class Window(Adw.ApplicationWindow):
     # ── player control ───────────────────────────────────────────────────
     def enter_player(self, title, item):
         self.current = item
+        self.together_media = None
         self.p_title.set_label(title)
         trust = (item.meta.get("trust") if item else None)
         lbl = {"verified": "✔ Verified", "likely": "✔ Free to share"}.get(trust)
@@ -1070,7 +1132,7 @@ class Window(Adw.ApplicationWindow):
         self.seek.set_fill_level(0)
         self.time_lbl.set_label("0:00 / --:--")
         self.dl_lbl.set_label("")
-        self.root.set_visible_child_name("player")
+        self._set_mode("player", self.mini if self.mini == "window" else None)
         self.video.mpv.volume = self.vol.get_value()
         self._show_controls()
 
@@ -1084,6 +1146,7 @@ class Window(Adw.ApplicationWindow):
         self.resume_key = None
         self.local_path = None
         self.pending_play = None
+        self.together_media = None
         self._stop_translation()
         self.video.stop()
         if self.is_fullscreen():
@@ -1194,6 +1257,76 @@ class Window(Adw.ApplicationWindow):
             return
         self.video.mpv.volume = v
         self.settings["volume"] = v
+
+    # ── picture-in-picture ───────────────────────────────────────────────
+    def _set_mode(self, name, mini=None):
+        self.root.name = name
+        was = self.mini
+        self.mini = mini if name == "player" else None
+        p, b = self._player_w, self._browse_w
+        corner, small = self.mini == "corner", self.mini == "window"
+        p.set_visible(name == "player")
+        b.set_visible(name != "player" or corner)
+        if corner:
+            w = int(max(320, min(520, self.get_width() * 0.3)))
+            p.set_size_request(w, w * 9 // 16)
+            p.set_halign(Gtk.Align.END)
+            p.set_valign(Gtk.Align.END)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(p, f"set_margin_{side}")(18)
+            p.add_css_class("mini-player")
+            p.set_overflow(Gtk.Overflow.HIDDEN)
+        else:
+            p.set_size_request(-1, -1)
+            p.set_halign(Gtk.Align.FILL)
+            p.set_valign(Gtk.Align.FILL)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(p, f"set_margin_{side}")(0)
+            p.remove_css_class("mini-player")
+        self.top_rev.set_visible(not self.mini)
+        self.bot_rev.set_visible(not self.mini)
+        self.mini_rev.set_visible(bool(self.mini))
+        self.mini_rev.set_reveal_child(False)
+        self.mini_prog.set_visible(bool(self.mini))
+        if self.mini:
+            self.mini_title.set_label(self.p_title.get_label())
+            self.mini_swap.set_icon_name("view-dual-symbolic" if small else "window-new-symbolic")
+            self.mini_swap.set_tooltip_text("Back into the CineHaven window's corner" if small else
+                                            "Pop out as a small window you can keep beside other apps")
+        if small and was != "window":
+            self._full_size = (self.get_width(), self.get_height(), self.is_maximized())
+            if self.is_fullscreen():
+                self.unfullscreen()
+            self.unmaximize()
+            self.set_default_size(480, 270)
+            self.set_title(self.p_title.get_label() or APP_NAME)
+            if not self.settings.get("pip_tip_shown"):
+                self.settings["pip_tip_shown"] = True
+                save_settings(self.settings)
+                self.toasts.add_toast(Adw.Toast(timeout=8, title="Tip: to keep it above other windows, "
+                                                "press Alt+Space and choose “Always on Top”"))
+        elif was == "window" and not small and self._full_size:
+            w, h, maxed = self._full_size
+            self._full_size = None
+            self.set_default_size(w, h)
+            if maxed:
+                self.maximize()
+            self.set_title(APP_NAME)
+
+    def mini_player(self, where="corner"):
+        if self.root.get_visible_child_name() != "player":
+            return
+        if self.is_fullscreen():
+            self.unfullscreen()
+        self._set_mode("player", where)
+        self.set_cursor(None)
+        if where == "corner":
+            self.set_focus(None)
+
+    def expand_player(self):
+        if self.root.get_visible_child_name() == "player":
+            self._set_mode("player", None)
+            self._show_controls()
 
     def toggle_fullscreen(self):
         self.unfullscreen() if self.is_fullscreen() else self.fullscreen()
@@ -1635,6 +1768,7 @@ class Window(Adw.ApplicationWindow):
     HISTORY_MAX = 10
 
     def _add_history(self, kind, ref, title, thumb=None):
+        self.together_media = self._shareable(kind, ref, title)
         key = self.resume_key
         if not key:
             return
@@ -1647,6 +1781,22 @@ class Window(Adw.ApplicationWindow):
         self.settings["history"] = h[:self.HISTORY_MAX]
         save_settings(self.settings)
         self._refresh_recent()
+
+    def _shareable(self, kind, ref, title):
+        """How a friend's CineHaven can open the same thing (for Watch together)."""
+        if kind == "youtube":
+            return {"kind": "youtube", "ref": ref, "title": title}
+        if kind == "file":
+            try:
+                size = os.path.getsize(ref)
+            except OSError:
+                size = None
+            return {"kind": "file", "ref": os.path.basename(ref), "size": size, "title": title}
+        if kind == "item":
+            it = self.engine.items.get(ref)
+            ia = it.meta.get("ia_id") if it else None
+            return {"kind": "ia", "ref": ia, "title": title} if ia else {"kind": "magnet", "ref": ref, "title": title}
+        return None
 
     def _build_recent_shelf(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=16, margin_end=16,
@@ -2009,6 +2159,13 @@ class Window(Adw.ApplicationWindow):
         return False
 
     def _show_controls(self):
+        if self.mini:
+            self.mini_rev.set_reveal_child(True)
+            self.set_cursor(None)
+            if self.hide_src:
+                GLib.source_remove(self.hide_src)
+            self.hide_src = GLib.timeout_add(2200, self._auto_hide)
+            return
         self.top_rev.set_reveal_child(True)
         self.bot_rev.set_reveal_child(True)
         self.set_cursor(None)
@@ -2019,6 +2176,9 @@ class Window(Adw.ApplicationWindow):
     def _auto_hide(self):
         self.hide_src = None
         if self.root.get_visible_child_name() != "player":
+            return False
+        if self.mini:
+            self.mini_rev.set_reveal_child(False)
             return False
         if self.video.mpv.pause or self.buf_box.get_visible():
             return False
@@ -2033,12 +2193,21 @@ class Window(Adw.ApplicationWindow):
             self._show_controls()
 
     def _on_click(self, gesture, n, _x, _y):
+        if self.mini:
+            if n == 2:
+                self.expand_player()
+            else:
+                self._show_controls()
+            return
         if n == 2:
             self.toggle_fullscreen()
         self._show_controls()
 
     def _on_key(self, _c, keyval, _code, state):
-        if self.root.get_visible_child_name() != "player":
+        if self.mini == "window" and Gdk.keyval_name(keyval) == "Escape":
+            self.expand_player()
+            return True
+        if self.root.get_visible_child_name() != "player" or self.mini == "corner":
             if keyval == Gdk.KEY_f and state & Gdk.ModifierType.CONTROL_MASK:
                 self.views.set_visible_child_name("discover")
                 self.search.grab_focus()
@@ -2082,6 +2251,9 @@ class Window(Adw.ApplicationWindow):
         if k == "Escape":
             self.unfullscreen() if self.is_fullscreen() else self.leave_player()
             return True
+        if k in ("i", "I") and not ctrl:
+            self.mini_player("window" if shift else "corner")
+            return True
         if k in acts:
             try:
                 acts[k]()
@@ -2123,6 +2295,10 @@ class Window(Adw.ApplicationWindow):
                 self.set_buffering("This channel isn't responding", "It may be off air right now – try another channel.", None)
         else:
             self.time_lbl.set_label(f"{fmt_time(pos or 0)} / {fmt_time(dur)}")
+        if self.mini:
+            self.mini_pp.set_icon_name("media-playback-start-symbolic" if paused else "media-playback-pause-symbolic")
+            if pos is not None and dur:
+                self.mini_prog.set_fraction(min(1, pos / dur))
         if not self.live:
             self._skip_tick(m, pos, dur, paused)
         self._sleep_tick(m, pos, dur, paused)
@@ -3314,6 +3490,7 @@ class Window(Adw.ApplicationWindow):
         if getattr(self, "_cleaned", False):
             return
         self._cleaned = True
+        self.together.shutdown()
         if self.cast_dev:
             try:
                 self.cast_dev.stop()
@@ -3334,6 +3511,20 @@ class Window(Adw.ApplicationWindow):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+class _Modes:
+    """Stands in for the old browse/player Stack: which of the two is showing."""
+
+    def __init__(self, win):
+        self.win = win
+        self.name = "browse"
+
+    def get_visible_child_name(self):
+        return self.name
+
+    def set_visible_child_name(self, name):
+        self.win._set_mode(name)
+
+
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
@@ -3344,7 +3535,7 @@ class App(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS
+        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS + TOGETHER_CSS
         css.load_from_data(data, len(data))
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)

@@ -112,6 +112,19 @@ GTK 4, libadwaita ≥ 1.5, python3-libtorrent ≥ 2.0, python3-mpv and libmpv. `
 ### Problems?
 Open *Menu → Help & diagnostics → Copy report* and paste the report into a [new issue](https://github.com/pi5ck/cinehaven/issues).
 
+## Watch together
+
+Watch in step with friends on other computers, anywhere in the world. Open the menu → **Watch together**, start a room and send your friends the room code (or the ready-made invite).
+
+* Pause, play, jumps and speed are shared, and everyone stays within about a second of each other. Anyone in the room can control it.
+* Films from Discover, YouTube links and torrents open by themselves for everyone. For your own video files, each person needs the same file; CineHaven looks for it or asks them to pick it.
+* Chat with the room from the 👥 button in the player.
+* Private: messages are end-to-end encrypted with the room code and pass through the free [ntfy.sh](https://ntfy.sh) relay, which stores nothing. You can point it at your own ntfy server instead.
+
+## Picture-in-picture
+
+Press **I** (or the ⧉ button in the player) and the film keeps playing in a corner while you browse. From there you can pop it out as a small window to keep beside other apps (**Shift+I**). Use Alt+Space → "Always on Top" to keep it above them. Double-click or press Esc to go back to the full player.
+
 ## Watching comfort
 
 * **HDR done right:** HDR10, HLG and Dolby Vision films get a badge, and on ordinary screens each scene's real brightness is measured and mapped so colours look rich instead of washed out.
