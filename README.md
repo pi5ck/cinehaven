@@ -53,6 +53,15 @@ CineHaven is a movie streamer and player for Linux, with Windows, macOS and BSD 
 * **Keeps working when YouTube changes:** CineHaven keeps its own copy of yt-dlp up to date. It checks weekly and whenever a video fails, and uses a download only if its SHA-256 matches yt-dlp's published checksum. If a stream address expires mid-film, it fetches a fresh one and carries on from the same spot. *Open on YouTube* is always there too.
 * **Recently played:** the top of Discover shows the last 10 films and videos you played and where you left off in each. Click one to carry on from there.
 
+## Sport
+
+The **Sport** tab shows live scores, fixtures and results for rugby (Nations Championship, Rugby
+Championship, Six Nations, URC, Champions Cup, World Cup) and football (SA Premiership, Premier League,
+Champions League, LaLiga, World Cup). Live matches refresh every 30 seconds. CineHaven doesn't stream
+matches: live sport is licensed to broadcasters per country, so **Where to watch** opens the official
+ones (SuperSport in South Africa, World Rugby's RugbyPass TV, or a search for your local broadcaster).
+**Highlights** searches YouTube in the app. Scores come from ESPN's public scoreboard.
+
 ## Your security cameras
 
 The **Cameras** tab shows your own IP cameras, DVRs and NVRs in a live grid. Click a tile to watch it full screen with as little delay as possible.
@@ -77,8 +86,8 @@ The **Cameras** tab shows your own IP cameras, DVRs and NVRs in a live grid. Cli
 **Ubuntu 24.04+ / Debian 13+ / Linux Mint 22+** (recommended – keeps itself up to date):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.15.tar.gz
-tar xzf cinehaven-1.0.15.tar.gz && cd cinehaven-1.0.15
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven-1.0.16.tar.gz
+tar xzf cinehaven-1.0.16.tar.gz && cd cinehaven-1.0.16
 ./install.sh
 ```
 
@@ -87,8 +96,8 @@ The installer asks for your password once to add the system libraries (GTK, libt
 **Or use the .deb package** (Ubuntu/Debian):
 
 ```bash
-wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.15_all.deb
-sudo apt install ./cinehaven_1.0.15_all.deb
+wget https://github.com/pi5ck/cinehaven/releases/latest/download/cinehaven_1.0.16_all.deb
+sudo apt install ./cinehaven_1.0.16_all.deb
 ```
 
 The .deb version tells you when an update is out, but you install the update yourself. The install.sh version updates itself.
