@@ -223,6 +223,7 @@ class Window(Adw.ApplicationWindow):
         GLib.timeout_add(2500, self._report_selfcheck)
         GLib.timeout_add_seconds(30, lambda: (self.check_updates(), False)[1])
         GLib.timeout_add_seconds(20, lambda: (self._start_probe(), False)[1])
+        GLib.timeout_add_seconds(45, lambda: (youtube.update_in_background(), False)[1])   # keep yt-dlp current
         GLib.timeout_add(250, self._player_tick)
         self.connect("close-request", self._on_close)
         if self.category == "docs":

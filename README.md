@@ -46,6 +46,13 @@ CineHaven is a movie streamer and player for Linux, with Windows, macOS and BSD 
 * **Crash guard:** if CineHaven ever crashes it restarts itself. After a second crash it restarts in safe mode, with hardware decoding off.
 * **Help & diagnostics** (menu) shows the repair log and lets you copy a report.
 
+## YouTube and Recently played
+
+* **Any YouTube video plays inside CineHaven.** Paste a link into the YouTube tab or Discover search, press Ctrl+V anywhere, drag a link in from the browser, or use Open › Play a YouTube link…. A `?t=` start time is honoured, English captions are added when available, and the format your graphics chip decodes is preferred.
+* **Easy YouTube search:** one box with suggestions as you type. One click plays a result.
+* **Keeps working when YouTube changes:** CineHaven keeps its own copy of yt-dlp up to date. It checks weekly and whenever a video fails, and uses a download only if its SHA-256 matches yt-dlp's published checksum. If a stream address expires mid-film, it fetches a fresh one and carries on from the same spot. *Open on YouTube* is always there too.
+* **Recently played:** the top of Discover shows the last 10 films and videos you played and where you left off in each. Click one to carry on from there.
+
 ## Your security cameras
 
 The **Cameras** tab shows your own IP cameras, DVRs and NVRs in a live grid. Click a tile to watch it full screen with as little delay as possible.

@@ -249,14 +249,22 @@ def search(query, limit=12):
 
 # ── any YouTube video, played inside CineHaven ────────────────────────────
 # yt-dlp (the open-source tool VLC and mpv use for YouTube) turns a YouTube link into the
-# video and audio streams. CineHaven uses the yt-dlp installed on the system (or its Python
-# module). YouTube changes often; when an old yt-dlp stops working the user is told how to
-# update it, and can always open the video on youtube.com instead.
+# video and audio streams. YouTube changes often and an old yt-dlp soon stops working, so
+# CineHaven keeps its own copy up to date (the user allowed this): it checks yt-dlp's official
+# GitHub releases weekly and whenever a video fails, and only uses a download whose SHA-256
+# matches the release's published checksum list. The newest of that copy, the system's
+# yt-dlp and its Python module is used.
+import hashlib  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 
 SUGGEST_URL = "https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&hl=en&q="
+TOOLS = os.path.join(DATA_DIR, "tools")
+YTDLP = os.path.join(TOOLS, "yt-dlp")
+YTDLP_STATE = os.path.join(TOOLS, "yt-dlp.json")
+YTDLP_REL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
+_upd_lock = threading.Lock()
 
 
 class YouTubeError(Exception):
@@ -278,6 +286,8 @@ def ytdlp_cmd():
     if "c" in _cmd_cache:
         return _cmd_cache["c"]
     cands = []
+    if os.path.isfile(YTDLP):
+        cands.append([sys.executable, YTDLP])
     exe = shutil.which("yt-dlp")
     if exe:
         cands.append([exe])
@@ -296,11 +306,49 @@ def ytdlp_cmd():
     return best, best_v
 
 
+def update_ytdlp(force=False):
+    """Bring CineHaven's own yt-dlp up to date (weekly, or now if force). Returns its version."""
+    with _upd_lock:
+        st = _load(YTDLP_STATE, {})
+        if not force and os.path.isfile(YTDLP) and time.time() - st.get("checked", 0) < 7 * 24 * 3600:
+            return st.get("version", "")
+        sums = fetch(YTDLP_REL + "SHA2-256SUMS", timeout=30).decode()
+        want = next((ln.split()[0].lower() for ln in sums.splitlines() if ln.split()[-1:] == ["yt-dlp"]), None)
+        if not want or not re.fullmatch(r"[0-9a-f]{64}", want):
+            raise YouTubeError("yt-dlp's checksum list has no entry for the program")
+        have = None
+        if os.path.isfile(YTDLP):
+            with open(YTDLP, "rb") as f:
+                have = hashlib.sha256(f.read()).hexdigest()
+        if have != want:
+            data = fetch(YTDLP_REL + "yt-dlp", timeout=180)
+            if hashlib.sha256(data).hexdigest() != want:
+                raise YouTubeError("the yt-dlp download didn't match its published checksum – not used")
+            os.makedirs(TOOLS, exist_ok=True)
+            tmp = YTDLP + ".new"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, YTDLP)
+        v = _ytdlp_version([sys.executable, YTDLP])
+        if not v:
+            raise YouTubeError("the new yt-dlp didn't start")
+        _save(YTDLP_STATE, {"checked": time.time(), "version": v, "sha256": want})
+        _cmd_cache.clear()
+        return v
+
+
+def update_in_background():
+    """Called at start-up: the weekly check, quietly."""
+    def work():
+        try:
+            update_ytdlp()
+        except Exception:
+            pass
+    threading.Thread(target=work, daemon=True).start()
+
+
 def update_hint():
-    if sys.platform.startswith("win") or sys.platform == "darwin":
-        return "Update CineHaven to get the newest YouTube support."
-    return ("Updating yt-dlp usually fixes this: in a terminal run  pipx upgrade yt-dlp  or  "
-            "sudo apt install --only-upgrade yt-dlp")
+    return "If it keeps happening, YouTube may have changed something new – CineHaven checks for a fix daily."
 
 
 def _js_runtimes():
@@ -338,7 +386,7 @@ FRIENDLY = (
     (r"Premieres in|This live event will begin", "this video hasn't started yet"),
     (r"timed out|Unable to download webpage|getaddrinfo|Network is unreachable", "couldn't reach YouTube"),
 )
-HOPELESS = r"Private video|members-only|age|removed|terminated|country|Premieres|live event|not a bot|reach YouTube"
+HOPELESS = r"adults|private|members|removed|your country|hasn't started|not a bot|couldn't reach|too long"
 
 
 def _friendly(err):
@@ -361,9 +409,29 @@ def resolve(link):
         raise YouTubeError("that isn't a YouTube video link")
     cmd, _v = ytdlp_cmd()
     if not cmd:
-        raise YouTubeError("YouTube playback needs yt-dlp, which isn't installed. "
-                           + ("On Ubuntu: sudo apt install yt-dlp" if sys.platform.startswith("linux")
-                              else update_hint()))
+        try:
+            update_ytdlp(force=True)
+        except Exception as e:
+            raise YouTubeError(f"YouTube playback needs yt-dlp, and it couldn't be downloaded ({e})") from None
+        cmd, _v = ytdlp_cmd()
+    try:
+        return _resolve_with(cmd, vid)
+    except YouTubeError as e:
+        if re.search(HOPELESS, str(e), re.I):
+            raise
+        st = _load(YTDLP_STATE, {})
+        if time.time() - st.get("forced", 0) < 3600:      # already fetched the newest this hour
+            raise
+        st["forced"] = time.time()
+        _save(YTDLP_STATE, st)
+        try:
+            update_ytdlp(force=True)                       # YouTube changed? get the newest yt-dlp, try again
+        except Exception:
+            raise e from None
+        return _resolve_with(ytdlp_cmd()[0], vid)
+
+
+def _resolve_with(cmd, vid):
     args = cmd + ["-J", "--no-playlist", "--no-warnings", *_js_runtimes(),
                   "-f", "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b", "-S", _codec_sort(),
                   WATCH_URL + vid]
