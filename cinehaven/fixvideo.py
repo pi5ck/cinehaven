@@ -24,7 +24,13 @@ from . import DATA_DIR
 from .health import log
 
 TOOLS = os.path.join(DATA_DIR, "tools")
-OUT_DIR = os.path.join(DATA_DIR, "converted")
+OLD_OUT_DIR = os.path.join(DATA_DIR, "converted")
+
+
+def out_dir():
+    """Repaired copies live with the films (Menu → Where films are kept), not on the system disk."""
+    import cinehaven
+    return os.path.join(cinehaven.DOWNLOAD_DIR, ".repaired")
 BUILD = "ffmpeg-master-latest-linux64-gpl"
 BUILD_URL = f"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/{BUILD}.tar.xz"
 SUMS_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256"
@@ -141,12 +147,12 @@ def tools_for(path, progress=None):
 def _out_path(path, mode):
     st = os.stat(path)
     key = hashlib.sha1(f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime}|{mode}".encode()).hexdigest()[:16]
-    return os.path.join(OUT_DIR, f"{key}.mkv")
+    return os.path.join(out_dir(), f"{key}.mkv")
 
 
 def make_playable(path, mode, progress=None, stop=lambda: False):
     """mode 'repair' (fast stream copy) or 'convert' (H.264/AAC). Returns the playable file path."""
-    os.makedirs(OUT_DIR, exist_ok=True)
+    os.makedirs(out_dir(), exist_ok=True)
     out = _out_path(path, mode)
     if os.path.exists(out) and os.path.getsize(out) > 0:
         return out
@@ -190,7 +196,7 @@ def convert_live(path, progress=None, stop=lambda: False, ready=None, status=Non
     ready(playlist, subtitle_files) is called as soon as the first segments exist (or at
     once if a finished conversion is cached). Returns the playlist path when done."""
     key = os.path.splitext(os.path.basename(_out_path(path, "live")))[0]
-    d = os.path.join(OUT_DIR, key)
+    d = os.path.join(out_dir(), key)
     pl = os.path.join(d, "index.m3u8")
     subs_of = lambda: sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".srt"))  # noqa: E731
     if os.path.exists(pl) and "#EXT-X-ENDLIST" in open(pl).read():
@@ -250,7 +256,7 @@ def cleanup():
     """Remove converted copies older than 30 days."""
     try:
         cutoff = time.time() - KEEP_DAYS * 86400
-        for e in os.scandir(OUT_DIR):
+        for e in os.scandir(out_dir()):
             if e.stat().st_mtime < cutoff:
                 shutil.rmtree(e.path) if e.is_dir() else os.remove(e.path)
     except OSError:

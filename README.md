@@ -112,6 +112,10 @@ GTK 4, libadwaita ≥ 1.5, python3-libtorrent ≥ 2.0, python3-mpv and libmpv. `
 ### Problems?
 Open *Menu → Help & diagnostics → Copy report* and paste the report into a [new issue](https://github.com/pi5ck/cinehaven/issues).
 
+## Where films are kept
+
+Like uTorrent or Transmission, everything CineHaven downloads goes into one **CineHaven** folder, including repaired copies of videos that wouldn't play. By default it's in your Videos folder. Menu → **Where films are kept…** moves the whole library to any drive with free space: an internal partition, a USB disk or a network share. Films and downloads in progress all move safely, and Recently played, resume points and My Videos follow. CineHaven opens that drive by itself each time it starts. If the drive is unplugged, the films wait for it instead of downloading again.
+
 ## Watch together
 
 Watch in step with friends on other computers, anywhere in the world. Open the menu → **Watch together**, start a room and send your friends the room code (or the ready-made invite).
