@@ -21,25 +21,48 @@ INDEX_TTL = 3 * 86400
 HEALTH_TTL = 6 * 3600
 
 ENGLISH_COUNTRIES = {"US", "UK", "GB", "CA", "AU", "NZ", "IE", "ZA", "INT"}
-SECTIONS = [  # (key, label, filter)
-    ("ZA", "🇿🇦 South Africa", lambda c: c["country"] == "ZA"),
-    ("AE", "🇦🇪 UAE", lambda c: c["country"] == "AE"),
-    ("series", "Series", lambda c: "series" in c["cats"] and c["country"] in ENGLISH_COUNTRIES),
-    ("movies", "Movies", lambda c: "movies" in c["cats"] and c["country"] in ENGLISH_COUNTRIES),
-    ("entertainment", "Entertainment", lambda c: ({"entertainment", "comedy", "classic", "family", "lifestyle"} & set(c["cats"]))
-     and c["country"] in ENGLISH_COUNTRIES),
-    ("kids", "Kids", lambda c: ({"kids", "animation"} & set(c["cats"])) and c["country"] in ENGLISH_COUNTRIES),
-    ("documentary", "Documentary", lambda c: ({"documentary", "science", "travel", "outdoor"} & set(c["cats"]))
-     and c["country"] in ENGLISH_COUNTRIES),
-    ("news", "News", lambda c: "news" in c["cats"] and c["country"] in ENGLISH_COUNTRIES | {"AE"}),
+GENRES = [  # (key, label, categories)
+    ("series", "Series", {"series"}),
+    ("movies", "Movies", {"movies"}),
+    ("entertainment", "Entertainment", {"entertainment", "comedy", "classic", "family", "lifestyle"}),
+    ("kids", "Kids", {"kids", "animation"}),
+    ("documentary", "Documentary", {"documentary", "science", "travel", "outdoor"}),
+    ("news", "News", {"news"}),
+    ("music", "Music", {"music"}),
+    ("sports", "Sport", {"sports"}),
 ]
+
+
+def sections(home):
+    """(key, label, filter) chips: the user's own countries first, then genres in their languages."""
+    from .watch import COUNTRIES, flag
+    langs = ENGLISH_COUNTRIES | set(home)
+    out = [(f"country:{cc}", f"{flag(cc)} {COUNTRIES.get(cc, cc)}", lambda c, cc=cc: c["country"] == cc)
+           for cc in home]
+    for key, label, cats in GENRES:
+        out.append((key, label, lambda c, cats=cats: bool(cats & set(c["cats"])) and c["country"] in langs))
+    return out
+
+
+def section_filter(key, home):
+    if key.startswith("country:"):
+        cc = key.split(":", 1)[1]
+        return lambda c: c["country"] == cc
+    return next((f for k, _l, f in sections(home) if k == key), None)
+
+
 # Subscription channels – any "free" stream of these is an unofficial copy.
 PAY_TV = ("osn", "star world", "star movies", "hbo", "cinemax", "showtime", "starz", "sky cinema",
           "sky atlantic", "m-net", "mnet", "dstv", "showmax", "bein", "supersport", "cartoon network",
           "nickelodeon", "amc series", "fx ", "fox movies", "sony max", "disney channel", "mbc+ ",
           "rotana cinema+", "zee cinema")
-FLAGS = {"ZA": "🇿🇦", "AE": "🇦🇪", "US": "🇺🇸", "UK": "🇬🇧", "GB": "🇬🇧", "CA": "🇨🇦", "AU": "🇦🇺",
-         "NZ": "🇳🇿", "IE": "🇮🇪", "INT": "🌐"}
+class _Flags(dict):
+    def __missing__(self, cc):
+        from .watch import flag
+        return flag(cc)
+
+
+FLAGS = _Flags()
 
 
 def _get(name):
@@ -62,8 +85,8 @@ def _is_pay(name):
 def load_index(force=False):
     """Compact list of candidate channels (rebuilt every 3 days)."""
     try:
-        if not force and time.time() - os.path.getmtime(INDEX) < INDEX_TTL:
-            with open(INDEX) as f:
+        if not force and time.time() - os.path.getmtime(INDEX + ".v2") < INDEX_TTL:
+            with open(INDEX + ".v2") as f:
                 return json.load(f)
     except (OSError, ValueError):
         pass
@@ -86,10 +109,9 @@ def load_index(force=False):
         c = channels[cid]
         item = {"id": cid, "name": c["name"], "country": c["country"],
                 "cats": c.get("categories") or [], "logo": logos.get(cid), "streams": ss[:3]}
-        if any(f(item) for _k, _l, f in SECTIONS):
-            out.append(item)
+        out.append(item)                       # every country (the user picks theirs)
     os.makedirs(DIR, exist_ok=True)
-    with open(INDEX, "w") as f:
+    with open(INDEX + ".v2", "w") as f:
         json.dump(out, f)
     return out
 

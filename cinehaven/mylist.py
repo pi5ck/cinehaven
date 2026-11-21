@@ -10,8 +10,15 @@ from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from . import watch  # noqa: E402
 
-CHOICES = [("BOTH", "South Africa + UAE")] + [(c, n) for c, n in watch.COUNTRIES.items()]
-FLAG = {c: chr(0x1F1E6 + ord(c[0]) - 65) + chr(0x1F1E6 + ord(c[1]) - 65) for c in watch.COUNTRIES}
+CHOICES = [("BOTH", "South Africa + UAE")] + [(c, f"{watch.flag(c)} {watch.COUNTRIES[c]}")
+                                              for c in watch.COUNTRY_ORDER]
+FLAG = {c: watch.flag(c) for c in watch.COUNTRIES}
+
+
+def home_countries(settings):
+    """The user's own country (or South Africa + UAE), for every country-aware page."""
+    sel = settings.get("country") or default_country()
+    return ["ZA", "AE"] if sel == "BOTH" else [sel]
 
 
 def default_country():

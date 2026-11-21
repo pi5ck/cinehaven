@@ -16,11 +16,42 @@ IMG = "https://images.justwatch.com"
 CACHE_FILE = os.path.join(DATA_DIR, "watch_cache.json")
 CACHE_TTL = 12 * 3600
 
-COUNTRIES = {"ZA": "South Africa", "AE": "UAE", "US": "United States", "GB": "United Kingdom",
-             "CA": "Canada", "AU": "Australia", "NZ": "New Zealand", "IE": "Ireland", "IN": "India",
-             "NG": "Nigeria", "KE": "Kenya", "SA": "Saudi Arabia", "EG": "Egypt", "DE": "Germany",
-             "FR": "France", "NL": "Netherlands", "ES": "Spain", "IT": "Italy", "BR": "Brazil",
-             "MX": "Mexico", "PH": "Philippines", "SG": "Singapore", "MY": "Malaysia"}
+COUNTRIES = {  # every country JustWatch covers, so "where to watch" works wherever the user lives
+    "ZA": "South Africa", "AE": "UAE", "US": "United States", "GB": "United Kingdom", "CA": "Canada",
+    "AU": "Australia", "NZ": "New Zealand", "IE": "Ireland", "IN": "India", "NG": "Nigeria", "KE": "Kenya",
+    "GH": "Ghana", "UG": "Uganda", "TZ": "Tanzania", "ZM": "Zambia", "ZW": "Zimbabwe", "MU": "Mauritius",
+    "EG": "Egypt", "MA": "Morocco", "DZ": "Algeria", "TN": "Tunisia", "LY": "Libya", "SN": "Senegal",
+    "CI": "Côte d'Ivoire", "CM": "Cameroon", "SA": "Saudi Arabia", "QA": "Qatar", "KW": "Kuwait",
+    "BH": "Bahrain", "OM": "Oman", "JO": "Jordan", "LB": "Lebanon", "IQ": "Iraq", "PS": "Palestine",
+    "IL": "Israel", "TR": "Türkiye", "DE": "Germany", "AT": "Austria", "CH": "Switzerland", "FR": "France",
+    "BE": "Belgium", "LU": "Luxembourg", "NL": "Netherlands", "ES": "Spain", "PT": "Portugal", "IT": "Italy",
+    "SM": "San Marino", "VA": "Vatican", "MT": "Malta", "GR": "Greece", "CY": "Cyprus", "DK": "Denmark",
+    "NO": "Norway", "SE": "Sweden", "FI": "Finland", "IS": "Iceland", "EE": "Estonia", "LV": "Latvia",
+    "LT": "Lithuania", "PL": "Poland", "CZ": "Czechia", "SK": "Slovakia", "HU": "Hungary", "RO": "Romania",
+    "BG": "Bulgaria", "MD": "Moldova", "UA": "Ukraine", "RS": "Serbia", "HR": "Croatia", "SI": "Slovenia",
+    "BA": "Bosnia and Herzegovina", "ME": "Montenegro", "MK": "North Macedonia", "AL": "Albania",
+    "XK": "Kosovo", "GE": "Georgia", "AZ": "Azerbaijan", "RU": "Russia", "BY": "Belarus",
+    "MX": "Mexico", "GT": "Guatemala", "HN": "Honduras", "SV": "El Salvador", "NI": "Nicaragua",
+    "CR": "Costa Rica", "PA": "Panama", "CU": "Cuba", "DO": "Dominican Republic", "JM": "Jamaica",
+    "TT": "Trinidad and Tobago", "BS": "Bahamas", "BB": "Barbados", "BM": "Bermuda", "PR": "Puerto Rico",
+    "CO": "Colombia", "VE": "Venezuela", "EC": "Ecuador", "PE": "Peru", "BO": "Bolivia", "CL": "Chile",
+    "AR": "Argentina", "UY": "Uruguay", "PY": "Paraguay", "BR": "Brazil", "GF": "French Guiana",
+    "JP": "Japan", "KR": "South Korea", "TW": "Taiwan", "HK": "Hong Kong", "CN": "China", "SG": "Singapore",
+    "MY": "Malaysia", "ID": "Indonesia", "PH": "Philippines", "TH": "Thailand", "VN": "Vietnam",
+    "PK": "Pakistan", "BD": "Bangladesh", "LK": "Sri Lanka", "NP": "Nepal", "FJ": "Fiji",
+    "PF": "French Polynesia",
+}
+COUNTRY_ORDER = sorted(COUNTRIES, key=lambda c: COUNTRIES[c])
+
+
+def flag(cc):
+    """🇿🇦 for "ZA"; 🌐 for anything that isn't a country code."""
+    cc = {"UK": "GB"}.get(cc, cc or "")
+    if len(cc) != 2 or not cc.isalpha():
+        return "🌐"
+    return chr(0x1F1E6 + ord(cc[0].upper()) - 65) + chr(0x1F1E6 + ord(cc[1].upper()) - 65)
+
+
 KIND_LABEL = {"FREE": "Free", "ADS": "Free with ads", "FLATRATE": "Subscription",
               "RENT": "Rent", "BUY": "Buy", "CINEMA": "In cinemas"}
 KIND_ORDER = ["FREE", "ADS", "FLATRATE", "RENT", "BUY", "CINEMA"]

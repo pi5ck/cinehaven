@@ -41,7 +41,7 @@ class ChannelCard(Gtk.Box):
         cat = ", ".join(c.title() for c in ch["cats"][:2]) or "General"
         row = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
         row.append(Gtk.Label(label="● LIVE", css_classes=["live-dot"]))
-        row.append(Gtk.Label(label=f"{livetv.FLAGS.get(ch['country'], ch['country'])} {cat}",
+        row.append(Gtk.Label(label=f"{livetv.FLAGS[ch['country']]} {cat}",
                              css_classes=["dim-label", "caption"]))
         self.append(row)
 
@@ -52,18 +52,31 @@ class LiveTVPage(Gtk.Box):
         self.win = win
         self.index = None
         self.health = livetv.Health()
-        self.section = win.settings.get("live_section", "ZA")
+        from .mylist import home_countries
+        self.home = home_countries(win.settings)
+        self.section = win.settings.get("live_section") or f"country:{self.home[0]}"
+        if self.section in ("ZA", "AE"):                      # older settings
+            self.section = f"country:{self.section}"
         self.gen = 0
         self.on_air = []
 
         top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         chips = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
         group = None
-        for key, label, _f in livetv.SECTIONS:
+        self.chips = {}
+        for key, label, _f in livetv.sections(self.home):
             b = Gtk.ToggleButton(label=label, group=group, active=(key == self.section), css_classes=["pill"])
             group = group or b
             b.connect("toggled", lambda btn, k=key: btn.get_active() and self.show_section(k))
+            self.chips[key] = b
             chips.append(b)
+        self._chip_group = group
+        # any other country's free channels
+        self.world = Gtk.DropDown.new_from_strings(["🌍 Other country…"])
+        self.world.set_tooltip_text("Free channels from any country")
+        self.world.connect("notify::selected", self._world_picked)
+        self._world_codes = []
+        chips.append(self.world)
         sc = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
         sc.set_child(chips)
         top.append(sc)
@@ -110,11 +123,36 @@ class LiveTVPage(Gtk.Box):
             self._loaded = False
             return
         self.index = idx
+        self._fill_world()
         self.show_section(self.section)
 
     def _filter(self, child):
         q = self.filter.get_text().strip().lower()
         return not q or q in child.get_child().ch["name"].lower()
+
+    def _fill_world(self):
+        from .watch import COUNTRIES
+        counts = {}
+        for c in self.index or []:
+            counts[c["country"]] = counts.get(c["country"], 0) + 1
+        codes = sorted((cc for cc in counts if cc not in self.home), key=lambda cc: COUNTRIES.get(cc, cc))
+        self._world_codes = [None] + codes
+        labels = ["🌍 Other country…"] + [f"{livetv.FLAGS[cc]} {COUNTRIES.get(cc, cc)} ({counts[cc]})" for cc in codes]
+        self._filling = True
+        self.world.set_model(Gtk.StringList.new(labels))
+        key = self.section.split(":", 1)[1] if self.section.startswith("country:") else None
+        self.world.set_selected(self._world_codes.index(key) if key in self._world_codes else 0)
+        self._filling = False
+
+    def _world_picked(self, *_):
+        if getattr(self, "_filling", False):
+            return
+        i = self.world.get_selected()
+        cc = self._world_codes[i] if 0 < i < len(self._world_codes) else None
+        if cc:
+            for b in self.chips.values():
+                b.set_active(False)
+            self.show_section(f"country:{cc}")
 
     def show_section(self, key):
         self.section = key
@@ -125,7 +163,10 @@ class LiveTVPage(Gtk.Box):
         gen = self.gen
         self.flow.remove_all()
         self.on_air = []
-        f = next(f for k, _l, f in livetv.SECTIONS if k == key)
+        f = livetv.section_filter(key, self.home)
+        if f is None:
+            key, f = f"country:{self.home[0]}", livetv.section_filter(f"country:{self.home[0]}", self.home)
+            self.section = key
         cands = [c for c in self.index if f(c)]
         pending = []
         for ch in cands:
