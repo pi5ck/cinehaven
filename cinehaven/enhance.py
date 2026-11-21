@@ -52,8 +52,12 @@ def _restore_defaults(m):
             pass
 
 
-def apply_picture(m, on, out_height=None):
-    """Turn picture enhancement on/off for the current video."""
+def apply_picture(m, on, out_height=None, level=2):
+    """Turn picture enhancement on/off for the current video.
+
+    level 1 = sharp scaling + deband; 2 = also AI upscaling and denoise of small videos;
+    3 = also EWA Lanczos scaling (sharpest, heaviest). adapt.py learns which level each kind
+    of video can afford on this computer."""
     try:
         vp = m.video_params or {}
     except Exception:
@@ -64,23 +68,12 @@ def apply_picture(m, on, out_height=None):
         m.vf = ""
         _restore_defaults(m)
         return
-    m.scale = "spline36"            # EWA Lanczos looks marginally sharper but drops frames on laptop GPUs
+    m.scale = "ewa_lanczossharp" if level >= 3 else "spline36"
     m.cscale = "spline36"
     m.deband = True
-    upscale = h and (out_height or 1080) >= h * 1.3 and h <= 1080 and os.path.exists(SHADER)
+    upscale = level >= 2 and h and (out_height or 1080) >= h * 1.3 and h <= 1080 and os.path.exists(SHADER)
     m.glsl_shaders = [SHADER] if upscale else []
-    m.vf = "lavfi=[hqdn3d=1.5:1.5:4:4]" if h and h <= 576 else ""
-
-
-def reduce(m):
-    """Playback is dropping frames: drop the heaviest parts (AI shader, then denoise). Returns what was dropped."""
-    if m.glsl_shaders:
-        m.glsl_shaders = []
-        return "AI upscaling"
-    if m.vf:
-        m.vf = ""
-        return "denoise"
-    return None
+    m.vf = "lavfi=[hqdn3d=1.5:1.5:4:4]" if level >= 2 and h and h <= 576 else ""
 
 
 def describe(m):
@@ -91,6 +84,11 @@ def describe(m):
     except Exception:
         return ""
     bits = []
+    try:
+        if m.scale == "ewa_lanczossharp":
+            bits.append("EWA scaling")
+    except Exception:
+        pass
     if shaders:
         bits.append(f"AI upscaling {vp.get('w')}×{vp.get('h')}")
     if m.vf:

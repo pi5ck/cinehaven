@@ -1,0 +1,45 @@
+name: tech-watch
+# Once a week: has the video technology CineHaven is built on moved on? Opens an issue for
+# each new mpv / FFmpeg / libplacebo / dav1d release so the next CineHaven release picks it up
+# (the Windows and macOS builds bundle the newest versions at build time).
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          latest() {  # repo, tag pattern
+            gh api "repos/$1/tags?per_page=100" --jq '.[].name' | grep -E "$2" | sort -V | tail -1
+          }
+          check() {  # name, repo, tag pattern, notes url
+            v=$(latest "$2" "$3" || true)
+            [ -n "$v" ] || { echo "$1: no release found"; return; }
+            title="$1 $v is out"
+            if gh issue list -R "$REPO" --state all --search "\"$title\" in:title" --json title --jq '.[].title' | grep -qxF "$title"; then
+              echo "$1 $v: already noted"
+            else
+              gh issue create -R "$REPO" --title "$title" --label tech-watch --body "A new $1 release: $v ($4).
+
+          The Windows and macOS builds bundle the newest $1 when they're built, so the next CineHaven release includes it. Check its notes for new formats, faster decoding or picture-quality features worth switching on in CineHaven." \
+                || gh issue create -R "$REPO" --title "$title" --body "A new $1 release: $v ($4)."
+              echo "$1 $v: issue opened"
+            fi
+          }
+          gh label create tech-watch -R "$REPO" --color 5319e7 --description "New video technology upstream" 2>/dev/null || true
+          check mpv        mpv-player/mpv       '^v[0-9]+\.[0-9]+\.[0-9]+$'   "https://github.com/mpv-player/mpv/releases"
+          check FFmpeg     FFmpeg/FFmpeg        '^n[0-9]+\.[0-9]+(\.[0-9]+)?$' "https://ffmpeg.org/download.html#releases"
+          check libplacebo haasn/libplacebo     '^v[0-9]+\.[0-9]+\.[0-9]+$'   "https://code.videolan.org/videolan/libplacebo/-/tags"
+          check dav1d      videolan/dav1d       '^[0-9]+\.[0-9]+\.[0-9]+$'    "https://code.videolan.org/videolan/dav1d/-/tags"

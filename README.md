@@ -46,6 +46,13 @@ CineHaven is a movie streamer and player for Linux, with Windows, macOS and BSD 
 * **Crash guard:** if CineHaven ever crashes it restarts itself. After a second crash it restarts in safe mode, with hardware decoding off.
 * **Help & diagnostics** (menu) shows the repair log and lets you copy a report.
 
+## Tunes itself to your computer
+
+* **Knows what your hardware can do:** a few seconds after starting, CineHaven tests which video formats (H.264, HEVC, HEVC 10-bit/HDR, VP9, AV1) your graphics chip really decodes. It does this with tiny clips in a separate process, so a faulty driver can't crash it. If a hardware-decoding driver is missing it tells you, and on Linux you can install it with one click. It tests again by itself when the graphics chip, its driver or the player changes.
+* **Learns the best picture for each kind of video:** with *Enhance picture* on, every film starts at the highest quality this computer has kept smooth for that kind of video (format × resolution × hardware/software decoding). Quality steps down at once if frames drop, and that is remembered. Levels that stuttered are tried again after a month, or straight away after a driver, hardware or player upgrade.
+* **Keeps up with video technology:** once a week it checks for new mpv and FFmpeg releases (the engines that decode and draw the picture) and shows what's newer than what you have. Menu → **Video technology** shows all of this.
+* For the project, a weekly GitHub job opens an issue whenever mpv, FFmpeg, libplacebo or dav1d release a new version, so new capabilities get into the next CineHaven release.
+
 ## Install
 
 **Ubuntu 24.04+ / Debian 13+ / Linux Mint 22+** (recommended – keeps itself up to date):

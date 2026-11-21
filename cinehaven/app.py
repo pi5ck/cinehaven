@@ -13,7 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import ai, cast, catalog, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
+from . import adapt, ai, cast, catalog, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
@@ -213,6 +213,7 @@ class Window(Adw.ApplicationWindow):
         GLib.timeout_add(1000, self._tick)
         GLib.timeout_add(2500, self._report_selfcheck)
         GLib.timeout_add_seconds(30, lambda: (self.check_updates(), False)[1])
+        GLib.timeout_add_seconds(20, lambda: (self._start_probe(), False)[1])
         GLib.timeout_add(250, self._player_tick)
         self.connect("close-request", self._on_close)
         if self.category == "docs":
@@ -248,6 +249,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("Auto English subtitles", "win.auto-english")
         menu.append("Show unverified titles", "win.show-unverified")
         menu.append("Phone remote", "win.phone-remote")
+        menu.append("Video technology", "win.video-tech")
         menu.append("Open downloads folder", "win.open-downloads")
         menu.append("Check for updates", "win.check-updates")
         menu.append("Help & diagnostics", "win.diagnostics")
@@ -259,6 +261,7 @@ class Window(Adw.ApplicationWindow):
                          ("open-video", self.pick_video), ("about", self.show_about),
                          ("diagnostics", self.show_diagnostics),
                          ("phone-remote", lambda *_: self.show_remote()),
+                         ("video-tech", lambda *_: self.show_tech()),
                          ("check-updates", lambda *_: self.check_updates(manual=True)),
                          ("open-downloads", lambda *_: Gio.AppInfo.launch_default_for_uri(
                              GLib.filename_to_uri(DOWNLOAD_DIR), None))):
@@ -1231,8 +1234,12 @@ class Window(Adw.ApplicationWindow):
     def _apply_enhancements(self):
         m = self.video.mpv
         out_h = self.video.get_height() * self.video.get_scale_factor()
+        if getattr(self, "_pic_level", None) is None:
+            self._pic_cls = adapt.video_class(m)
+            self._pic_level = adapt.start_level(self._pic_cls) if self._pic_cls else 2
+            self._smooth_s = 0
         try:
-            enhance.apply_picture(m, bool(self.settings.get("enhance_picture")), out_h or None)
+            enhance.apply_picture(m, bool(self.settings.get("enhance_picture")), out_h or None, self._pic_level)
             enhance.apply_audio(m, bool(self.settings.get("dialogue_boost")), bool(self.settings.get("night_mode")))
         except Exception as e:
             health.log.warning("Couldn't apply picture/sound settings: %s", e)
@@ -1578,6 +1585,10 @@ class Window(Adw.ApplicationWindow):
         except Exception:
             key = None
         if key and key != getattr(self, "_enh_key", None) and (key[1] or key[2]):
+            if not key[1] or getattr(self, "_enh_key", (None,))[0] != key[0]:
+                self._pic_level = None         # a new film: start from what was learnt for its kind
+            elif getattr(self, "_pic_cls", None) is None:
+                self._pic_level = None         # its picture only just appeared
             self._enh_key = key                # new file (or its streams just appeared)
             self._apply_enhancements()
             self._drops = (time.time(), m.frame_drop_count or 0)
@@ -1586,11 +1597,21 @@ class Window(Adw.ApplicationWindow):
             if time.time() - t0 > 10:            # every 10 s: too many dropped frames? lighten the load
                 d = (m.frame_drop_count or 0) - d0
                 self._drops = (time.time(), m.frame_drop_count or 0)
-                if d > 12:
-                    gone = enhance.reduce(m)
-                    if gone:
-                        health.log.info("Enhance picture: dropped %d frames in 10 s – turned off %s", d, gone)
-                        self.toast(f"Turned off {gone} to keep playback smooth on this computer")
+                lvl = getattr(self, "_pic_level", None) or 2
+                if d > 12 and lvl > 1:
+                    adapt.record_drop(self._pic_cls, lvl)
+                    self._pic_level = lvl - 1
+                    self._smooth_s = 0
+                    self._apply_enhancements()
+                    health.log.info("Enhance picture: dropped %d frames in 10 s at level %d (%s) – now %d",
+                                    d, lvl, self._pic_cls, lvl - 1)
+                    self.toast(f"Picture quality set to “{adapt.LEVELS[lvl - 1]}” to keep playback smooth – "
+                               "remembered for films like this")
+                elif d <= 2:
+                    self._smooth_s = getattr(self, "_smooth_s", 0) + 10
+                    if self._smooth_s >= 300:      # five smooth minutes: note it
+                        adapt.record_smooth(self._pic_cls, lvl, self._smooth_s)
+                        self._smooth_s = 0
         a = getattr(self, "_ai", None)
         reported = a is not None and self._ai_done_to > a.start_at       # worker has finished a piece
         if a and pos is not None and not os.path.exists(a.out + ".done") and (
@@ -1868,6 +1889,162 @@ class Window(Adw.ApplicationWindow):
             self.toast(f"Stopped casting to {dev.name}")
 
     # ── phone remote ─────────────────────────────────────────────────────
+    # -- self-tuning ----------------------------------------------------------
+    def _start_probe(self):
+        def work():
+            try:
+                info = adapt.probe()
+            except Exception as e:
+                health.log.info("Video probe failed: %s", e)
+                return
+            GLib.idle_add(self._probe_done, info)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _probe_done(self, info):
+        tips = info.get("advice") or []
+        seen = self.settings.get("tech_tip_seen")
+        if tips and seen != info.get("fp"):
+            self.settings["tech_tip_seen"] = info.get("fp")
+            save_settings(self.settings)
+            t = Adw.Toast(title=tips[0]["title"], timeout=12, button_label="Details")
+            t.connect("button-clicked", lambda *_: self.show_tech())
+            self.toasts.add_toast(t)
+        return False
+
+    def show_tech(self, force=False):
+        d = Adw.Dialog(title="Video technology", content_width=620, content_height=640)
+        tv = Adw.ToolbarView()
+        hb = Adw.HeaderBar()
+        again = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Test again and look for news")
+        hb.pack_start(again)
+        tv.add_top_bar(hb)
+        stack = Gtk.Stack()
+        stack.add_named(Adw.StatusPage(title="Testing this computer…", child=Adw.Spinner()
+                                       if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True)), "wait")
+        tv.set_content(stack)
+        d.set_child(tv)
+        d.present(self)
+
+        def run(force):
+            stack.set_visible_child_name("wait")
+            again.set_sensitive(False)
+
+            def work():
+                try:
+                    info = adapt.probe(force=force)
+                except Exception as e:
+                    info = {"error": str(e)}
+                try:
+                    news = adapt.tech_news(force=force)
+                except Exception:
+                    news = []
+                GLib.idle_add(fill, info, news)
+            threading.Thread(target=work, daemon=True).start()
+
+        def fill(info, news):
+            again.set_sensitive(True)
+            old = stack.get_child_by_name("info")
+            if old:
+                stack.remove(old)
+            page = Adw.PreferencesPage()
+            if info.get("error"):
+                g = Adw.PreferencesGroup(title="This computer")
+                g.add(Adw.ActionRow(title="The test didn't finish", subtitle=info["error"]))
+                page.add(g)
+
+            tips = info.get("advice") or []
+            if tips:
+                g = Adw.PreferencesGroup(title="Suggestions")
+                for tip in tips:
+                    row = Adw.ActionRow(title=tip["title"], subtitle=tip["text"])
+                    row.set_subtitle_lines(0)
+                    if tip.get("package"):
+                        b = Gtk.Button(label="Install", valign=Gtk.Align.CENTER, css_classes=["suggested-action"])
+
+                        def install(btn, pkg=tip["package"]):
+                            btn.set_sensitive(False)
+                            btn.set_label("Installing…")
+
+                            def w():
+                                ok, msg = adapt.install_driver(pkg)
+                                GLib.idle_add(lambda: (btn.set_label("Installed" if ok else "Install"),
+                                                       btn.set_sensitive(not ok), self.toast(msg), False)[-1])
+                            threading.Thread(target=w, daemon=True).start()
+                        b.connect("clicked", install)
+                        row.add_suffix(b)
+                    g.add(row)
+                    if tip.get("command"):
+                        c = Adw.ActionRow(title="Or in a terminal", subtitle=f"sudo {tip['command']}",
+                                          subtitle_selectable=True)
+                        c.add_css_class("property")
+                        g.add(c)
+                page.add(g)
+
+            g = Adw.PreferencesGroup(title="This computer")
+            for vendor, _pid, name in info.get("gpus") or []:
+                g.add(Adw.ActionRow(title="Graphics chip", subtitle=f"{vendor} {name}".strip()))
+            g.add(Adw.ActionRow(title="Processor", subtitle=f"{info.get('cpu_threads', '?')} threads"))
+            page.add(g)
+
+            dec = info.get("decode") or {}
+            g = Adw.PreferencesGroup(title="Who decodes each video format",
+                                     description="Tested for real with short clips. The graphics chip is faster "
+                                                 "and uses far less power than the processor.")
+            if not dec:
+                g.add(Adw.ActionRow(title="Couldn't test", subtitle="FFmpeg is needed to make the test clips"))
+            for name, label, _a in adapt.CODECS:
+                if name in dec:
+                    hw = dec[name]
+                    row = Adw.ActionRow(title=label, subtitle=f"Graphics chip ({hw})" if hw else "Processor")
+                    row.add_prefix(Gtk.Image(icon_name="emblem-ok-symbolic" if hw else "dialog-information-symbolic"))
+                    g.add(row)
+            page.add(g)
+
+            learnt = adapt.learned()
+            g = Adw.PreferencesGroup(title="Picture quality it has learnt",
+                                     description="With Enhance picture on, CineHaven starts every film at the best "
+                                                 "quality it knows this computer can keep smooth, and steps down "
+                                                 "by itself if frames drop. A faster setup is tried again.")
+            if not learnt:
+                g.add(Adw.ActionRow(title="Nothing yet", subtitle="It learns as you watch with Enhance picture on"))
+            for cls, rec in sorted(learnt.items()):
+                lvl = adapt.start_level(cls)
+                bits = [f"starts at “{adapt.LEVELS[lvl]}”"]
+                if rec.get("seconds"):
+                    bits.append(f"{rec['seconds'] // 60} min smooth")
+                if rec.get("fail"):
+                    bits.append(f"stuttered at “{adapt.LEVELS.get(rec['fail'], rec['fail'])}”")
+                g.add(Adw.ActionRow(title=adapt.describe_class(cls), subtitle=" · ".join(bits)))
+            if learnt:
+                f = Gtk.Button(label="Forget", valign=Gtk.Align.CENTER, css_classes=["flat"])
+                f.connect("clicked", lambda *_: (adapt.forget(), self.toast("Forgotten – it will learn again"),
+                                                 run(False)))
+                g.set_header_suffix(f)
+            page.add(g)
+
+            g = Adw.PreferencesGroup(title="Video technology news",
+                                     description="Checked once a week. " + adapt.how_to_update_engines())
+            for r in news:
+                if r["latest"] is None:
+                    sub = f"You have {r['have']} – couldn't check for newer"
+                elif r["newer"]:
+                    sub = f"You have {r['have']} · {r['latest']} is out"
+                else:
+                    sub = f"{r['have']} – the newest"
+                row = Adw.ActionRow(title=r["name"], subtitle=sub)
+                if r["newer"] and r["url"]:
+                    b = Gtk.Button(label="What's new", valign=Gtk.Align.CENTER, css_classes=["flat"])
+                    b.connect("clicked", lambda *_, u=r["url"]: Gtk.UriLauncher.new(u).launch(self, None, None, None))
+                    row.add_suffix(b)
+                g.add(row)
+            page.add(g)
+            stack.add_named(page, "info")
+            stack.set_visible_child_name("info")
+            return False
+
+        again.connect("clicked", lambda *_: run(True))
+        run(force)
+
     def show_remote(self):
         try:
             url = self.remote.start()
