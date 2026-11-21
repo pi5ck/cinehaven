@@ -19,6 +19,7 @@ from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
 from .mylist import CSS as MYLIST_CSS, MyListPage, StreamCard, streaming_docs  # noqa: E402
 from .livetv_ui import CSS as LIVE_CSS, LiveTVPage  # noqa: E402
+from .cameras_ui import CSS as CAM_CSS, CamerasPage  # noqa: E402
 from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
 from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage  # noqa: E402
 
@@ -223,6 +224,10 @@ class Window(Adw.ApplicationWindow):
 
     def _on_view_changed(self, views, _p):
         name = views.get_visible_child_name()
+        if name == "cameras":
+            self.cameras.on_shown()
+        else:
+            self.cameras.on_hidden()
         if name == "live":
             self.livetv.on_shown()
         elif name == "youtube":
@@ -341,6 +346,9 @@ class Window(Adw.ApplicationWindow):
         # Live TV – free channels, health-checked
         self.livetv = LiveTVPage(self)
         self.views.add_titled_with_icon(self.livetv, "live", "Live TV", "video-display-symbolic")
+        # Cameras – the user's own security cameras, DVRs and NVRs
+        self.cameras = CamerasPage(self)
+        self.views.add_titled_with_icon(self.cameras, "cameras", "Cameras", "camera-web-symbolic")
         # YouTube – free full movies posted by official studio channels
         self.youtube = YouTubePage(self)
         self.views.add_titled_with_icon(self.youtube, "youtube", "YouTube", "media-playback-start-symbolic")
@@ -1048,6 +1056,8 @@ class Window(Adw.ApplicationWindow):
             self.unfullscreen()
         self.root.set_visible_child_name("browse")
         self.set_cursor(None)
+        if self.views.get_visible_child_name() == "cameras":
+            self.cameras.on_shown()
         if self.current and not self.current.is_complete():
             self.toast("Download continues in the Library")
         self.current = None
@@ -1252,6 +1262,8 @@ class Window(Adw.ApplicationWindow):
         m.referrer = ""
         m.demuxer_lavf_analyzeduration = 0
         m.demuxer_lavf_o = ""
+        m.cache_pause = True
+        m.video_latency_hacks = False
         try:
             m["hls-bitrate"] = "max"
         except Exception:
@@ -1279,11 +1291,26 @@ class Window(Adw.ApplicationWindow):
             m["hls-bitrate"] = 3_000_000                  # ≤ ~720p: smooth on ordinary connections
         except Exception:
             pass
-        self.set_buffering("Tuning in…", f"{ch['name']} – live channels take about 10–20 seconds to start", None)
+        if ch.get("camera"):                         # security camera: as close to real time as possible
+            m.demuxer_lavf_o = "fflags=+nobuffer"
+            m.demuxer_lavf_analyzeduration = 0.5
+            m.cache_pause = False
+            m.video_latency_hacks = True
+            self.p_trust.set_label("● CAMERA")
+            self.set_buffering("Connecting…", f"{ch['name']}", None)
+        else:
+            self.set_buffering("Tuning in…", f"{ch['name']} – live channels take about 10–20 seconds to start", None)
         self._lang_done = False
         idx = ch["streams"].index(stream) if stream in ch["streams"] else 0
         self.doctor.start("live", stream["url"], ch["name"], ch=ch, stream_idx=idx)
         self.video.play(stream["url"])
+
+    def play_camera(self, cam):
+        """Full-screen view of one of the user's cameras (main stream, the small one as backup)."""
+        self.cameras.on_hidden()
+        streams = [{"url": cam["main"]}] + ([{"url": cam["sub"]}] if cam.get("sub") else [])
+        self.play_live({"id": "cam:" + cam["id"], "name": cam["name"], "streams": streams, "camera": True},
+                       streams[0])
 
     def _select_track(self, prop, val):
         if prop == "sid":
@@ -2737,6 +2764,7 @@ class Window(Adw.ApplicationWindow):
         self._stop_translation()
         self.tr_pool.shutdown(wait=False, cancel_futures=True)
         self.livetv.shutdown()
+        self.cameras.shutdown()
         self.myvideos.shutdown()
         self.video.shutdown()
         self.thumbs.shutdown(wait=False, cancel_futures=True)
@@ -2753,7 +2781,7 @@ class App(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS
+        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS
         css.load_from_data(data, len(data))
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)

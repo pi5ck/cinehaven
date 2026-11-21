@@ -46,6 +46,18 @@ CineHaven is a movie streamer and player for Linux, with Windows, macOS and BSD 
 * **Crash guard:** if CineHaven ever crashes it restarts itself. After a second crash it restarts in safe mode, with hardware decoding off.
 * **Help & diagnostics** (menu) shows the repair log and lets you copy a report.
 
+## Your security cameras
+
+The **Cameras** tab shows your own IP cameras, DVRs and NVRs in a live grid. Click a tile to watch it full screen with as little delay as possible.
+
+* **Any format:** RTSP/RTSPS (nearly every IP camera and recorder), HTTP MJPEG (older cameras and phone camera apps), HLS, RTMP/HTTP-FLV and SRT.
+* **Search my network:** finds cameras and recorders that speak ONVIF, and anything with a camera port open.
+* **Pick the make:** Hikvision, Annke, HiLook, Dahua, Amcrest, Lorex, Reolink, Uniview, Swann, TP-Link Tapo and VIGI, Axis, Foscam, Hanwha/Wisenet, Vivotek, Eufy, Wyze and phone camera apps. Enter the address, user name and password. A DVR or NVR adds one tile per channel.
+* **"I don't know – find it for me":** asks the camera over ONVIF for its stream address, or tries each make's address format until one plays.
+* **Or paste any stream address,** for example a UniFi Protect RTSPS link.
+* The grid uses each camera's smaller stream and the full-screen view uses the main stream. The doctor falls back to the smaller stream if the main one fails, and snapshots are saved to Pictures › CineHaven Cameras.
+* Logins stay on this computer in a file only you can read, and are sent only to the cameras themselves.
+
 ## Tunes itself to your computer
 
 * **Knows what your hardware can do:** a few seconds after starting, CineHaven tests which video formats (H.264, HEVC, HEVC 10-bit/HDR, VP9, AV1) your graphics chip really decodes. It does this with tiny clips in a separate process, so a faulty driver can't crash it. If a hardware-decoding driver is missing it tells you, and on Linux you can install it with one click. It tests again by itself when the graphics chip, its driver or the player changes.

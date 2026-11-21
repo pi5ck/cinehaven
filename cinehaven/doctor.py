@@ -240,9 +240,13 @@ class PlaybackDoctor:
                 s["url"] = st["url"]
                 m.user_agent = st.get("ua") or "Mozilla/5.0 (X11; Linux x86_64)"
                 m.referrer = st.get("ref") or ""
-                return self._reload(None, "Trying the channel's backup stream")
+                return self._reload(None, "Trying the camera's smaller stream" if ch.get("camera")
+                                    else "Trying the channel's backup stream")
             if step("reconnect"):
-                return self._reload(None, "Reconnecting to the channel")
+                return self._reload(None, "Reconnecting to the camera" if ch and ch.get("camera")
+                                    else "Reconnecting to the channel")
+            if ch and ch.get("camera"):
+                return self.give_up("the camera isn't answering – is it switched on and connected?")
             if ch:
                 self.win.livetv.mark_offline(ch)
             return self.give_up("the channel is off air")
