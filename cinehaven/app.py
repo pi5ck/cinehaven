@@ -23,6 +23,7 @@ from .cameras_ui import CSS as CAM_CSS, CamerasPage  # noqa: E402
 from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
 from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage, _Thumb  # noqa: E402
 from .together_ui import CSS as TOGETHER_CSS, Together  # noqa: E402
+from .pip import CSS as PIP_CSS, PipShelf  # noqa: E402
 
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
@@ -219,6 +220,9 @@ class Window(Adw.ApplicationWindow):
         self.stage.set_child(self._browse_w)
         self.stage.add_overlay(self._player_w)
         self.stage.set_measure_overlay(self._player_w, True)
+        self.pips = PipShelf(self)                           # up to three more films in small tiles
+        self.stage.add_overlay(self.pips)
+        self._now_entry = None                               # how to reopen what the main player shows
         self.toasts.set_child(self.stage)
         self._set_mode("browse")
 
@@ -1121,6 +1125,12 @@ class Window(Adw.ApplicationWindow):
 
     # ── player control ───────────────────────────────────────────────────
     def enter_player(self, title, item):
+        if self.mini == "corner" and self.root.get_visible_child_name() == "player":
+            src = self._pip_capture()                         # the corner film carries on in a tile of its own
+            if src:
+                self.pips.park(src)
+        self._now_entry = None
+        self.pips.give_sound(None)                           # a new main film: it has the sound
         self.current = item
         self.together_media = None
         self.p_title.set_label(title)
@@ -1153,6 +1163,9 @@ class Window(Adw.ApplicationWindow):
             self.unfullscreen()
         self.root.set_visible_child_name("browse")
         self.set_cursor(None)
+        self._now_entry = None
+        if self.pips.tiles and self.pips.sound is None:
+            self.pips.give_sound(self.pips.tiles[-1])       # the main film closed: hear the newest tile
         if self.views.get_visible_child_name() == "cameras":
             self.cameras.on_shown()
         self._refresh_recent()
@@ -1288,6 +1301,8 @@ class Window(Adw.ApplicationWindow):
         self.mini_rev.set_visible(bool(self.mini))
         self.mini_rev.set_reveal_child(False)
         self.mini_prog.set_visible(bool(self.mini))
+        if hasattr(self, "pips"):
+            self.pips.layout()
         if self.mini:
             self.mini_title.set_label(self.p_title.get_label())
             self.mini_swap.set_icon_name("view-dual-symbolic" if small else "window-new-symbolic")
@@ -1312,6 +1327,76 @@ class Window(Adw.ApplicationWindow):
             if maxed:
                 self.maximize()
             self.set_title(APP_NAME)
+
+    def _pip_capture(self):
+        """What the main player is showing, so a tile can carry on with it."""
+        m = self.video.mpv
+        if self.cast_dev or self.pending_play is not None:
+            return None
+        try:
+            path = m.path
+            if not path:
+                return None
+            src = {"url": path, "title": self.p_title.get_label() or "Video", "entry": self._now_entry,
+                   "pos": None if self.live else m.time_pos, "paused": bool(m.pause)}
+            for prop in ("user_agent", "referrer", "http_header_fields"):
+                src[prop] = getattr(m, prop, None)
+        except Exception:
+            return None
+        return src
+
+    def pip_open_main(self, src):
+        """A tile becomes the main film (the main one, if any, becomes a tile)."""
+        if self.root.get_visible_child_name() == "player":
+            cur = self._pip_capture()
+            if cur:
+                self.pips.park(cur)
+        if self.mini:
+            self._set_mode("player" if self.root.get_visible_child_name() == "player" else "browse", None)
+        self.pips.give_sound(None)
+        e, pos = src.get("entry") or {}, src.get("pos")
+        kind = e.get("kind")
+        if kind == "youtube":
+            self.play_youtube(e["ref"], e.get("title"), start=pos)
+            return
+        if kind == "live":
+            self.play_live(e["ch"], e["stream"])
+            return
+        if kind == "file" and os.path.isfile(e["ref"]):
+            self.play_local(e["ref"], e.get("title"))
+        elif kind == "item" and self.engine.items.get(e["ref"]):
+            self.watch_item(self.engine.items[e["ref"]])
+        else:
+            self.enter_player(src["title"], None)
+            m = self.video.mpv
+            for prop in ("user_agent", "referrer", "http_header_fields"):
+                if src.get(prop):
+                    try:
+                        setattr(m, prop, src[prop])
+                    except Exception:
+                        pass
+            self.video.play(src["url"])
+        if pos:
+            self._seek_when_ready(pos)
+
+    def _seek_when_ready(self, pos, tries=300):
+        def poll():
+            nonlocal tries
+            tries -= 1
+            m = self.video.mpv
+            try:
+                ready = m.time_pos is not None and self.pending_play is None
+            except Exception:
+                ready = False
+            if ready:
+                self._hide_resume()
+                try:
+                    m.seek(pos, "absolute", "exact")
+                except Exception:
+                    pass
+                return False
+            return tries > 0
+        GLib.timeout_add(300, poll)
 
     def mini_player(self, where="corner"):
         if self.root.get_visible_child_name() != "player":
@@ -1734,6 +1819,7 @@ class Window(Adw.ApplicationWindow):
         self.local_path = None
         self.resume_key = None
         self.enter_player(ch["name"], None)
+        self._now_entry = {"kind": "live", "ch": ch, "stream": stream, "title": ch["name"]}
         self.p_trust.set_label("● LIVE")
         self.p_trust.set_visible(True)
         self.pending_play = None
@@ -1769,6 +1855,7 @@ class Window(Adw.ApplicationWindow):
 
     def _add_history(self, kind, ref, title, thumb=None):
         self.together_media = self._shareable(kind, ref, title)
+        self._now_entry = {"kind": kind, "ref": ref, "title": title}
         key = self.resume_key
         if not key:
             return
@@ -3491,6 +3578,7 @@ class Window(Adw.ApplicationWindow):
             return
         self._cleaned = True
         self.together.shutdown()
+        self.pips.shutdown()
         if self.cast_dev:
             try:
                 self.cast_dev.stop()
@@ -3535,7 +3623,7 @@ class App(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS + TOGETHER_CSS
+        data = CSS + MYLIST_CSS + LIVE_CSS + LOCAL_CSS + YT_CSS + CAM_CSS + TOGETHER_CSS + PIP_CSS
         css.load_from_data(data, len(data))
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)

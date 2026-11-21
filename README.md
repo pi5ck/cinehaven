@@ -125,6 +125,8 @@ Watch in step with friends on other computers, anywhere in the world. Open the m
 
 Press **I** (or the ⧉ button in the player) and the film keeps playing in a corner while you browse. From there you can pop it out as a small window to keep beside other apps (**Shift+I**). Use Alt+Space → "Always on Top" to keep it above them. Double-click or press Esc to go back to the full player.
 
+**Up to four at once:** with a film in the corner, start another one and the first carries on in a tile of its own, from the same moment. You can have three tiles plus the main player. Only one has sound: click 🔊 on a tile to listen to it. Double-click a tile to make it the main film, and the main one swaps into its place.
+
 ## Watching comfort
 
 * **HDR done right:** HDR10, HLG and Dolby Vision films get a badge, and on ordinary screens each scene's real brightness is measured and mapped so colours look rich instead of washed out.
