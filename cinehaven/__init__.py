@@ -40,7 +40,13 @@ def _videos_dir():
     return os.path.expanduser("~/Videos")
 
 
-DOWNLOAD_DIR = os.path.join(_videos_dir(), "CineHaven")
+def _download_dir():
+    """The folder or drive the user chose for films (Menu → Where films are kept), else ~/Videos/CineHaven."""
+    from .storage import chosen_dir
+    return chosen_dir() or os.path.join(_videos_dir(), "CineHaven")
+
+
+DOWNLOAD_DIR = _download_dir()
 OLD_DATA_DIR = os.path.join(_xdg_data, "openreel")          # earlier name of the app
 OLD_DOWNLOAD_DIR = os.path.join(_videos_dir(), "OpenReel")
 UPDATE_REPO = "pi5ck/cinehaven"   # GitHub repository the self-updater follows

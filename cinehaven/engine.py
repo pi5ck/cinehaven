@@ -441,7 +441,10 @@ class _Handler(BaseHTTPRequestHandler):
 class Engine:
     def __init__(self):
         os.makedirs(TORRENT_DIR, exist_ok=True)
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        try:
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        except OSError:
+            pass                                  # its drive isn't connected – handled per film
         self.closing = False
         self.items = {}
         s = lt.default_settings()
@@ -467,9 +470,19 @@ class Engine:
 
     # -- adding -----------------------------------------------------------
     def _add(self, atp, meta):
-        atp.save_path = meta.get("save_path") or DOWNLOAD_DIR
+        import cinehaven
+        offline = False
+        if meta.get("save_path"):
+            offline = not os.path.isdir(meta["save_path"])  # its drive is unplugged: wait, don't re-download
+        else:
+            try:
+                os.makedirs(cinehaven.DOWNLOAD_DIR, exist_ok=True)
+            except OSError:
+                raise RuntimeError("The drive where CineHaven keeps your films isn't connected. Plug it in, "
+                                   "or choose another place in Menu → Where films are kept, and try again.")
+        atp.save_path = meta.get("save_path") or cinehaven.DOWNLOAD_DIR
         meta["save_path"] = atp.save_path
-        if meta.get("paused"):
+        if meta.get("paused") or offline:
             atp.flags |= lt.torrent_flags.paused
             atp.flags &= ~lt.torrent_flags.auto_managed
         pre = str(atp.ti.info_hash()) if atp.ti is not None else str(atp.info_hashes.v1)
@@ -478,6 +491,7 @@ class Engine:
         h = self.session.add_torrent(atp)
         key = str(h.info_hash())
         it = Item(self, h, meta)
+        it.offline = offline
         self.items[key] = it
         return it
 

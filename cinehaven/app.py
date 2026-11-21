@@ -13,7 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import adapt, ai, cast, catalog, mpris, youtube, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
+from . import adapt, ai, cast, catalog, mpris, storage, youtube, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
@@ -246,6 +246,9 @@ class Window(Adw.ApplicationWindow):
         threading.Thread(target=fixvideo.cleanup, daemon=True).start()
         GLib.timeout_add(1000, self._tick)
         GLib.timeout_add(2500, self._report_selfcheck)
+        if getattr(app, "storage_missing", False):
+            GLib.timeout_add(3000, lambda: (self._storage_missing_notice(), False)[1])
+            GLib.timeout_add_seconds(10, self._storage_tick)
         GLib.timeout_add_seconds(30, lambda: (self.check_updates(), False)[1])
         GLib.timeout_add_seconds(20, lambda: (self._start_probe(), False)[1])
         GLib.timeout_add_seconds(45, lambda: (youtube.update_in_background(), False)[1])   # keep yt-dlp current
@@ -291,6 +294,7 @@ class Window(Adw.ApplicationWindow):
         menu.append("Watch together…", "win.together")
         menu.append("Phone remote", "win.phone-remote")
         menu.append("Video technology", "win.video-tech")
+        menu.append("Where films are kept…", "win.storage")
         menu.append("Open downloads folder", "win.open-downloads")
         menu.append("Check for updates", "win.check-updates")
         menu.append("Help & diagnostics", "win.diagnostics")
@@ -304,6 +308,7 @@ class Window(Adw.ApplicationWindow):
                          ("diagnostics", self.show_diagnostics),
                          ("phone-remote", lambda *_: self.show_remote()),
                          ("together", lambda *_: self.together.show()),
+                         ("storage", lambda *_: self.show_storage()),
                          ("video-tech", lambda *_: self.show_tech()),
                          ("check-updates", lambda *_: self.check_updates(manual=True)),
                          ("open-downloads", lambda *_: Gio.AppInfo.launch_default_for_uri(
@@ -1397,6 +1402,185 @@ class Window(Adw.ApplicationWindow):
                 return False
             return tries > 0
         GLib.timeout_add(300, poll)
+
+    # ── where films are kept ─────────────────────────────────────────────
+    def _storage_missing_notice(self):
+        t = Adw.Toast(title="The drive with your films isn't connected – plug it in and they'll come back",
+                      timeout=10, button_label="Change…")
+        t.connect("button-clicked", lambda *_: self.show_storage())
+        self.toasts.add_toast(t)
+
+    def _storage_tick(self):
+        try:
+            where = storage.ensure_available(self.settings)
+        except Exception:
+            where = None
+        if not where:
+            return True
+        storage.set_download_dir(where)
+        save_settings(self.settings)
+        self.get_application().storage_missing = False
+        for it in self.engine.items.values():
+            if getattr(it, "offline", False):
+                it.offline = False
+                try:
+                    it.handle.force_recheck()
+                except Exception:
+                    pass
+                if not it.meta.get("paused"):
+                    it.resume()
+        self.toast("Your films drive is connected again")
+        return False
+
+    def show_storage(self):
+        import cinehaven
+        cur = cinehaven.DOWNLOAD_DIR
+        d = Adw.Dialog(title="Where films are kept", content_width=560, content_height=560)
+        tv = Adw.ToolbarView()
+        tv.add_top_bar(Adw.HeaderBar())
+        page = Adw.PreferencesPage()
+        g = Adw.PreferencesGroup(title="Now")
+        here = os.path.isdir(cur)
+        size = storage.folder_size(cur) if here else None
+        free, total = storage.free_space(cur) if here else (None, None)
+        row = Adw.ActionRow(title=cur, title_lines=2,
+                            subtitle=(f"{storage.gb(size)} of films · {storage.gb(free)} free on this drive"
+                                      if here else "This drive isn't connected"))
+        row.add_prefix(Gtk.Image(icon_name="folder-videos-symbolic"))
+        if here:
+            ob = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER, css_classes=["flat"],
+                            tooltip_text="Open this folder")
+            ob.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(GLib.filename_to_uri(cur), None))
+            row.add_suffix(ob)
+        g.add(row)
+        page.add(g)
+        g2 = Adw.PreferencesGroup(title="Move them to", description="Everything moves into a folder called "
+                                  "“CineHaven” there – your other files on that drive aren't touched.")
+        cur_mount = (storage.where(cur) or {}).get("mount")
+        spin = Gtk.Spinner(spinning=True)
+        g2.set_header_suffix(spin)
+        page.add(g2)
+
+        def fill(pl):
+            spin.set_visible(False)
+            for p in pl:
+                if p["path"] and (p["path"] == cur_mount or (not cur_mount and p["dev"] is None
+                                                             and cur.startswith(p["path"]))):
+                    continue
+                if p["mounted"]:
+                    sub = f"{storage.gb(p['free'])} free of {storage.gb(p['total'])}"
+                else:
+                    sub = f"{storage.gb(p['total'])} · not open yet – CineHaven will open it"
+                r = Adw.ActionRow(title=p["label"], subtitle=sub)
+                r.add_prefix(Gtk.Image(icon_name="drive-removable-media-symbolic" if p.get("usb")
+                                       else "drive-harddisk-symbolic"))
+                b = Gtk.Button(label="Move here", valign=Gtk.Align.CENTER, css_classes=["pill"])
+                b.connect("clicked", lambda _b, p=p: self._storage_pick(d, p))
+                r.add_suffix(b)
+                g2.add(r)
+            r = Adw.ActionRow(title="Choose another folder…", activatable=True)
+            r.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
+            r.connect("activated", lambda *_: self._storage_choose(d))
+            g2.add(r)
+            return False
+
+        def work():
+            try:
+                pl = storage.places()
+            except Exception:
+                pl = []
+            GLib.idle_add(fill, pl)
+        threading.Thread(target=work, daemon=True).start()
+        tv.set_content(page)
+        d.set_child(tv)
+        d.present(self)
+
+    def _storage_choose(self, dlg):
+        fd = Gtk.FileDialog(title="Choose where to keep films")
+
+        def done(f, res):
+            try:
+                folder = f.select_folder_finish(res).get_path()
+            except GLib.Error:
+                return
+            self._storage_confirm(dlg, folder, os.path.basename(folder) or folder)
+        fd.select_folder(self, None, done)
+
+    def _storage_pick(self, dlg, p):
+        base = p["path"]
+        if not base:
+            try:
+                base = storage.mount_device(p["dev"])
+            except Exception as e:
+                self.toast(f"That drive couldn't be opened: {e}")
+                return
+        self._storage_confirm(dlg, base, p["label"])
+
+    def _storage_confirm(self, dlg, base, label):
+        import cinehaven
+        target = base if os.path.basename(base.rstrip(os.sep)) == storage.FOLDER else os.path.join(base, storage.FOLDER)
+        if os.path.realpath(target) == os.path.realpath(cinehaven.DOWNLOAD_DIR):
+            self.toast("Your films are already there")
+            return
+        n = len(self.engine.items)
+        size = storage.folder_size(cinehaven.DOWNLOAD_DIR) if os.path.isdir(cinehaven.DOWNLOAD_DIR) else 0
+        free, _t = storage.free_space(base)
+        body = (f"{n} film{'s' if n != 1 else ''} ({storage.gb(size)}) will move into\n{target}\n\n"
+                f"{storage.gb(free)} is free there. New downloads will go there too. Downloads pause briefly "
+                "while the films move.")
+        if storage.looks_like_windows(base):
+            body += "\n\n⚠ This looks like your Windows drive. It works, but another drive is usually a better home."
+        a = Adw.AlertDialog(heading=f"Move your films to {label}?", body=body)
+        a.add_response("cancel", "Cancel")
+        a.add_response("move", "Move films")
+        a.set_response_appearance("move", Adw.ResponseAppearance.SUGGESTED)
+        a.set_default_response("move")
+        a.connect("response", lambda _a, r: r == "move" and (dlg.close(), self._storage_move(target, label)))
+        a.present(self)
+
+    def _storage_move(self, target, label):
+        if self.current is not None and self.root.get_visible_child_name() == "player":
+            self.leave_player()
+        d = Adw.Dialog(title="Moving your films", content_width=420, can_close=False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=24, margin_bottom=24,
+                      margin_start=24, margin_end=24)
+        lbl = Gtk.Label(label="Getting ready…", wrap=True)
+        bar = Gtk.ProgressBar(show_text=True)
+        box.append(Gtk.Label(label=f"To {label}", css_classes=["title-3"]))
+        box.append(lbl)
+        box.append(bar)
+        box.append(Gtk.Label(label="You can keep using CineHaven – just don't unplug the drive.",
+                             css_classes=["dim-label", "caption"], wrap=True))
+        d.set_child(box)
+        d.present(self)
+
+        def progress(done, total, text):
+            GLib.idle_add(lambda: (lbl.set_label(text), bar.set_fraction(done / total if total else 1), False)[2])
+
+        def work():
+            try:
+                res = storage.move_library(self.engine, self.settings, target, progress)
+                err = None
+            except Exception as e:
+                res, err = None, e
+            GLib.idle_add(finished, res, err)
+
+        def finished(res, err):
+            d.set_can_close(True)
+            d.close()
+            save_settings(self.settings)
+            if err:
+                a = Adw.AlertDialog(heading="The films couldn't all be moved", body=str(err))
+                a.add_response("ok", "OK")
+                a.present(self)
+                return False
+            msg = f"Your films are now on {label}"
+            if res["skipped"]:
+                msg += f" ({len(res['skipped'])} item(s) left behind – a file with the same name was already there)"
+            self.toast(msg)
+            self._refresh_recent()
+            return False
+        threading.Thread(target=work, daemon=True).start()
 
     def mini_player(self, where="corner"):
         if self.root.get_visible_child_name() != "player":
@@ -3628,6 +3812,18 @@ class App(Adw.Application):
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         os.makedirs(DATA_DIR, exist_ok=True)
+        self.storage_missing = False
+        try:
+            where = storage.ensure_available(self.settings)       # opens the films drive if it's closed
+        except Exception:
+            where = None
+        if where:
+            storage.set_download_dir(where)
+            if self.settings.get("download_dir") and self.settings["download_dir"] != where:
+                save_settings(self.settings)
+        else:
+            self.storage_missing = True
+            health.log.warning("The drive with the films isn't connected: %s", self.settings.get("download_dir"))
         health.selfcheck()
         try:
             self.engine = Engine()
