@@ -46,7 +46,8 @@ class PlaybackDoctor:
         self.default_hwdec = "no" if SAFE_MODE else "auto-safe"
 
     # called by the window whenever something new starts playing
-    def start(self, kind, url, title, item=None, ch=None, stream_idx=0):
+    def start(self, kind, url, title, item=None, ch=None, stream_idx=0, refresh=None):
+        """refresh: optional function returning a new address for the same video (YouTube's expire)."""
         m = self.win.video.mpv
         try:                                     # every new title starts from clean settings
             m.hwdec = self.default_hwdec
@@ -57,7 +58,7 @@ class PlaybackDoctor:
         self.src = {"kind": kind, "url": url, "title": title, "item": item, "ch": ch,
                     "stream_idx": stream_idx, "tried": set(), "attempts": 0,
                     "started": time.time(), "last_pos": None, "last_move": time.time(),
-                    "healing": False, "ok_since": None, "orig": None}
+                    "healing": False, "ok_since": None, "orig": None, "refresh": refresh}
         self.win.video.recent_errors.clear()     # errors from the previous title don't count
         log.info("Play %s: %s (%s)", kind, title, url if kind != "local" else "file")
 
@@ -250,6 +251,8 @@ class PlaybackDoctor:
             if ch:
                 self.win.livetv.mark_offline(ch)
             return self.give_up("the channel is off air")
+        if s.get("refresh") and step("fresh-address"):
+            return self._refresh(pos)
         if kind == "url" and step("reconnect"):
             return self._reload(pos, "Reconnecting")
         path = s["orig"] or s["url"]
@@ -339,6 +342,32 @@ class PlaybackDoctor:
                     return False
                 GLib.idle_add(next_fix)
 
+        threading.Thread(target=work, daemon=True).start()
+        return False
+
+    def _refresh(self, pos):
+        """Get a new stream address (e.g. YouTube's expire after a few hours) and carry on at pos."""
+        s = self.src
+        s["healing"] = True
+        self.win.set_buffering("Fixing a playback problem…", "Getting a fresh stream from YouTube", None)
+
+        def work():
+            try:
+                new, err = s["refresh"](), None
+            except Exception as e:
+                new, err = None, str(e)
+            GLib.idle_add(done, new, err)
+
+        def done(new, err):
+            if self.src is not s:
+                return False
+            s["healing"] = False
+            if not new:
+                self.give_up(err or "no stream", drm=True)
+                return False
+            s["url"] = new
+            self._reload(pos, "Got a fresh stream – carrying on")
+            return False
         threading.Thread(target=work, daemon=True).start()
         return False
 

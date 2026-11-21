@@ -10,10 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, APP_NAME, APP_VERSION, DATA_DIR, DOWNLOAD_DIR  # noqa: E402
-from . import adapt, ai, cast, catalog, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
+from . import adapt, ai, cast, catalog, youtube, enhance, fixvideo, health, recommend, remote, safety, skip, translate, websearch  # noqa: E402
 from .doctor import DownloadDoctor, PlaybackDoctor  # noqa: E402
 from .engine import Engine, fetch, is_video, normalize_magnet  # noqa: E402
 from .player import VideoView  # noqa: E402
@@ -21,7 +21,7 @@ from .mylist import CSS as MYLIST_CSS, MyListPage, StreamCard, streaming_docs  #
 from .livetv_ui import CSS as LIVE_CSS, LiveTVPage  # noqa: E402
 from .cameras_ui import CSS as CAM_CSS, CamerasPage  # noqa: E402
 from .localmedia_ui import CSS as LOCAL_CSS, MyVideosPage  # noqa: E402
-from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage  # noqa: E402
+from .youtube_ui import CSS as YT_CSS, FilmCard, YouTubePage, _Thumb  # noqa: E402
 
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 BADGE = {catalog.VERIFIED: ("✔ Verified", "success"),
@@ -32,6 +32,10 @@ CSS = b"""
 .nudge { min-width: 0; padding-left: 8px; padding-right: 8px; font-weight: bold; }
 .skip-btn { font-weight: bold; font-size: 1.1em; padding: 10px 22px; }
 .poster { border-radius: 10px; background: alpha(currentColor, .08); }
+.recent-thumb { border-radius: 10px; background: alpha(currentColor, .08); }
+.recent-progress { margin: 0 8px 6px 8px; }
+.recent-progress trough, .recent-progress progress { min-height: 4px; border-radius: 2px; }
+.recent-x { min-width: 24px; min-height: 24px; padding: 0; opacity: .75; }
 .movie-card { padding: 6px; border-radius: 14px; }
 .movie-card:hover { background: alpha(currentColor, .06); }
 .badge { font-size: 0.78em; font-weight: 700; padding: 2px 8px; border-radius: 99px; }
@@ -206,6 +210,10 @@ class Window(Adw.ApplicationWindow):
         drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
         drop.connect("drop", self._on_drop)
         self.add_controller(drop)
+        tdrop = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.COPY)   # a link dragged from the browser
+        tdrop.connect("drop", lambda _t, v, *_: (youtube.is_link(v.strip()) or normalize_magnet(v.strip()))
+                      and (self.open_any(v.strip()) or True))
+        self.add_controller(tdrop)
 
         self.remote = remote.Remote(lambda c, v: GLib.idle_add(self._remote_command, c, v))
         self.doctor = PlaybackDoctor(self)
@@ -245,6 +253,7 @@ class Window(Adw.ApplicationWindow):
         open_menu.append("Paste magnet link…", "win.open-magnet")
         open_menu.append("Open .torrent file…", "win.open-torrent")
         open_menu.append("Play a video file…", "win.open-video")
+        open_menu.append("Play a YouTube link…", "win.open-youtube")
         ob = Gtk.MenuButton(icon_name="list-add-symbolic", menu_model=open_menu,
                             tooltip_text="Open link, torrent or video")
         hb.pack_start(ob)
@@ -264,6 +273,7 @@ class Window(Adw.ApplicationWindow):
 
         for name, cb in (("open-magnet", self.ask_magnet), ("open-torrent", self.pick_torrent),
                          ("open-video", self.pick_video), ("about", self.show_about),
+                         ("open-youtube", self.ask_youtube),
                          ("diagnostics", self.show_diagnostics),
                          ("phone-remote", lambda *_: self.show_remote()),
                          ("video-tech", lambda *_: self.show_tech()),
@@ -288,7 +298,8 @@ class Window(Adw.ApplicationWindow):
         self.search = Gtk.SearchEntry(placeholder_text="Search free movies — classics, cartoons, noir, open films…",
                                       css_classes=["big-search"], search_delay=450)
         self.search.connect("search-changed", lambda e: self.run_search(e.get_text()))
-        self.search.connect("activate", lambda e: self.run_search(e.get_text()))
+        self.search.connect("activate", lambda e: self.play_youtube(e.get_text()) if youtube.is_link(e.get_text())
+                            else self.run_search(e.get_text()))
         clamp.set_child(self.search)
         disc.append(clamp)
         self.category = self.settings.get("discover_category", "movies")
@@ -318,6 +329,7 @@ class Window(Adw.ApplicationWindow):
         self.disc_stack = Gtk.Stack()
         sc = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        inner.append(self._build_recent_shelf())
         inner.append(self._build_ai_shelf())
         inner.append(self._build_web_shelf())
         inner.append(self._build_doc_shelf())
@@ -1021,6 +1033,8 @@ class Window(Adw.ApplicationWindow):
         self._lang_done = False
         self.doctor.start("local" if it.is_complete() else "torrent", url, it.title, item=it)
         self.video.play(url, subs, start=start)
+        ia = it.meta.get("ia_id")
+        self._add_history("item", it.key, it.meta.get("title") or it.title, catalog.THUMB_URL + ia if ia else None)
         self._offer_resume(start)
         self._waiting_first_frame = time.time()
 
@@ -1058,6 +1072,7 @@ class Window(Adw.ApplicationWindow):
         self.set_cursor(None)
         if self.views.get_visible_child_name() == "cameras":
             self.cameras.on_shown()
+        self._refresh_recent()
         if self.current and not self.current.is_complete():
             self.toast("Download continues in the Library")
         self.current = None
@@ -1305,6 +1320,190 @@ class Window(Adw.ApplicationWindow):
         self.doctor.start("live", stream["url"], ch["name"], ch=ch, stream_idx=idx)
         self.video.play(stream["url"])
 
+    # ── recently played ──────────────────────────────────────────────────
+    HISTORY_MAX = 10
+
+    def _add_history(self, kind, ref, title, thumb=None):
+        key = self.resume_key
+        if not key:
+            return
+        h = [e for e in self.settings.get("history", []) if e["key"] != key]
+        old = next((e for e in self.settings.get("history", []) if e["key"] == key), {})
+        rs = self.settings.get("resume", {}).get(key) or {}
+        h.insert(0, {"key": key, "kind": kind, "ref": ref, "title": title, "thumb": thumb or old.get("thumb"),
+                     "when": time.time(), "t": rs.get("t") or old.get("t"), "dur": rs.get("dur") or old.get("dur"),
+                     "done": False if rs else old.get("done", False)})
+        self.settings["history"] = h[:self.HISTORY_MAX]
+        save_settings(self.settings)
+        self._refresh_recent()
+
+    def _build_recent_shelf(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=16, margin_end=16,
+                      margin_bottom=10, visible=False)
+        box.append(Gtk.Label(label="Recently played", xalign=0, css_classes=["title-4"], margin_start=6))
+        self.recent_row = Gtk.Box(spacing=10)
+        hs = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        hs.set_child(self.recent_row)
+        box.append(hs)
+        self.recent_box = box
+        GLib.idle_add(lambda: (self._refresh_recent(), False)[1])
+        return box
+
+    def _refresh_recent(self):
+        if not hasattr(self, "recent_row"):
+            return
+        row = self.recent_row
+        while row.get_first_child():
+            row.remove(row.get_first_child())
+        hist = self.settings.get("history", [])[:self.HISTORY_MAX]
+        self.recent_box.set_visible(bool(hist))
+        for e in hist:
+            row.append(self._recent_card(e))
+
+    def _recent_card(self, e):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, css_classes=["recent-card"])
+        card.set_size_request(208, -1)
+        ov = Gtk.Overlay()
+        pic = _Thumb(208, 117)
+        ov.set_child(pic)
+        icon = Gtk.Image(icon_name={"youtube": "media-playback-start-symbolic", "file": "folder-videos-symbolic"}
+                         .get(e["kind"], "video-x-generic-symbolic"), pixel_size=36, css_classes=["dim-label"])
+        ov.add_overlay(icon)
+        t, dur = e.get("t") or 0, e.get("dur") or 0
+        if dur and (t or e.get("done")):
+            bar = Gtk.ProgressBar(fraction=1.0 if e.get("done") else min(1, t / dur), valign=Gtk.Align.END,
+                                  css_classes=["recent-progress"])
+            ov.add_overlay(bar)
+        x = Gtk.Button(icon_name="window-close-symbolic", css_classes=["circular", "osd", "recent-x"],
+                       halign=Gtk.Align.END, valign=Gtk.Align.START, margin_top=4, margin_end=4,
+                       tooltip_text="Remove from Recently played")
+        x.connect("clicked", lambda *_: self._forget_recent(e))
+        ov.add_overlay(x)
+        card.append(ov)
+        card.append(Gtk.Label(label=e["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=26,
+                              css_classes=["heading"]))
+        if e.get("done"):
+            sub = "Watched to the end · play again"
+        elif t and dur:
+            sub = f"Left off at {fmt_time(t)} of {fmt_time(dur)}"
+        elif t:
+            sub = f"Left off at {fmt_time(t)}"
+        else:
+            sub = "Just started"
+        card.append(Gtk.Label(label=sub, xalign=0, css_classes=["dim-label", "caption"]))
+        click = Gtk.GestureClick()
+        click.connect("released", lambda *_: self._open_recent(e))
+        card.add_controller(click)
+        card.set_cursor_from_name("pointer")
+        card.set_tooltip_text("Resume" if t and not e.get("done") else "Play")
+
+        def show_thumb(tex):
+            pic.set_paintable(tex)
+            icon.set_visible(False)
+        if e.get("thumb"):
+            class _P:                                   # load_thumb wants something with set_paintable
+                set_paintable = staticmethod(show_thumb)
+            self.load_thumb(e["thumb"], _P)
+        elif e["kind"] == "file" and os.path.isfile(e["ref"]):
+            from . import localmedia
+
+            def work():
+                p = localmedia.thumbnail(e["ref"])
+                if p:
+                    GLib.idle_add(lambda: (show_thumb(Gdk.Texture.new_from_filename(p)), False)[1])
+            self.thumbs.submit(work)
+        return card
+
+    def _forget_recent(self, e):
+        self.settings["history"] = [h for h in self.settings.get("history", []) if h["key"] != e["key"]]
+        save_settings(self.settings)
+        self._refresh_recent()
+
+    def _open_recent(self, e):
+        kind, ref = e["kind"], e["ref"]
+        if kind == "youtube":
+            self.play_youtube(ref, e["title"])
+        elif kind == "file":
+            if os.path.isfile(ref):
+                self.play_local(ref, e["title"])
+            else:
+                self.toast("That file has been moved or deleted")
+        elif kind == "item":
+            it = self.engine.items.get(ref)
+            if it:
+                self.watch_item(it)
+            else:
+                self.toast("It's no longer in your Library – find it again in Discover")
+        return True
+
+    # ── YouTube, inside CineHaven ─────────────────────────────────────────
+    def play_youtube(self, link, title=None, start=None):
+        vid = youtube.video_id(link)
+        if not vid:
+            self.toast("That isn't a YouTube video link")
+            return
+        if start is None:
+            start = youtube.start_time(link)
+        self._stop_ai_subs()
+        self._remember_position()
+        self._hide_resume()
+        self.enter_player(title or "YouTube", None)
+        self.p_trust.set_label("▶ YouTube")
+        self.p_trust.set_visible(True)
+        self.pending_play = None
+        self._reset_live()
+        self._stop_translation()
+        self._lang_done = False
+        self.local_path = None
+        self.resume_key = None
+        self.video.stop()
+        self.set_buffering("Opening YouTube…", title or "", None)
+        self._yt_gen = gen = getattr(self, "_yt_gen", 0) + 1
+
+        def work():
+            try:
+                info, err = youtube.resolve(vid), None
+            except Exception as e:
+                info, err = None, str(e)
+            GLib.idle_add(done, info, err)
+
+        def done(info, err):
+            if gen != self._yt_gen or self.root.get_visible_child_name() != "player":
+                return False
+            if err:
+                self.set_buffering(None, None, None)
+                dlg = Adw.AlertDialog(heading="Can't play this YouTube video here", body=err[:1:].upper() + err[1:])
+                dlg.add_response("close", "Close")
+                dlg.add_response("web", "Open on YouTube")
+                dlg.set_response_appearance("web", Adw.ResponseAppearance.SUGGESTED)
+
+                def resp(_d, r):
+                    if r == "web":
+                        Gio.AppInfo.launch_default_for_uri(youtube.watch_url(vid), None)
+                    self.leave_player()
+                dlg.connect("response", resp)
+                dlg.present(self)
+                return False
+            self.p_title.set_label(info["title"])
+            self.resume_key = f"yt:{vid}"
+            saved = self._saved_pos(self.resume_key)
+            m = self.video.mpv
+            m.user_agent = info["ua"] or "Mozilla/5.0 (X11; Linux x86_64)"
+            if info["live"]:
+                self.live = True
+                self._live_t = time.time()
+                self.seek.set_visible(False)
+            self.set_buffering("Starting…", f"{info['channel']} · {info['quality']}", None)
+            self.doctor.start("url", info["url"], info["title"], refresh=lambda: youtube.resolve(vid)["url"])
+            first = start if start is not None else saved
+            self.video.play(info["url"], info["subs"][:1], start=None if info["live"] else first)
+            if start is None and not info["live"]:
+                self._offer_resume(saved)
+            self._waiting_first_frame = time.time()
+            self._add_history("youtube", vid, info["title"], info["thumb"])
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
     def play_camera(self, cam):
         """Full-screen view of one of the user's cameras (main stream, the small one as backup)."""
         self.cameras.on_hidden()
@@ -1532,6 +1731,10 @@ class Window(Adw.ApplicationWindow):
             if keyval == Gdk.KEY_f and state & Gdk.ModifierType.CONTROL_MASK:
                 self.views.set_visible_child_name("discover")
                 self.search.grab_focus()
+                return True
+            if keyval in (Gdk.KEY_v, Gdk.KEY_V) and state & Gdk.ModifierType.CONTROL_MASK \
+                    and not isinstance(self.get_focus(), (Gtk.Text, Gtk.TextView)):
+                self._paste_link()                  # Ctrl+V anywhere (not in a text box): play the link
                 return True
             return False
         k = Gdk.keyval_name(keyval)
@@ -2550,6 +2753,7 @@ class Window(Adw.ApplicationWindow):
         start = self._saved_pos(path)
         self.doctor.start("local", path, title or os.path.basename(path))
         self.video.play(path, start=start)
+        self._add_history("file", path, title or os.path.splitext(os.path.basename(path))[0])
         self._offer_resume(start)
 
     def _saved_pos(self, key):
@@ -2571,6 +2775,9 @@ class Window(Adw.ApplicationWindow):
                         "title": self.p_title.get_label()}
         elif pos and dur and pos >= dur - 120:
             res.pop(key, None)            # finished – start from the beginning next time
+        for e in self.settings.get("history", []):
+            if e["key"] == key and pos and dur:
+                e.update(t=round(pos, 1), dur=round(dur, 1), when=time.time(), done=pos >= dur - 120)
         if len(res) > 500:                # keep the newest 500
             for k in sorted(res, key=lambda k: res[k].get("when", 0))[:-500]:
                 res.pop(k)
@@ -2634,8 +2841,47 @@ class Window(Adw.ApplicationWindow):
         self.settings.get("resume", {}).pop(path, None)
         save_settings(self.settings)
 
+    def _paste_link(self):
+        def got(c, res):
+            try:
+                t = (c.read_text_finish(res) or "").strip()
+            except GLib.Error:
+                t = ""
+            if youtube.is_link(t) or normalize_magnet(t):
+                self.open_any(t)
+            elif t:
+                self.toast("Copy a YouTube or magnet link, then press Ctrl+V to play it")
+        self.get_clipboard().read_text_async(None, got)
+
+    def ask_youtube(self, *_):
+        dlg = Adw.AlertDialog(heading="Play a YouTube link",
+                              body="Paste the address of any YouTube video. It plays here in CineHaven.")
+        entry = Gtk.Entry(placeholder_text="https://www.youtube.com/watch?v=…", activates_default=True)
+
+        def got(c, res):
+            try:
+                t = (c.read_text_finish(res) or "").strip()
+                if youtube.is_link(t):
+                    entry.set_text(t)
+            except GLib.Error:
+                pass
+        self.get_clipboard().read_text_async(None, got)
+        dlg.set_extra_child(entry)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("play", "Play")
+        dlg.set_response_appearance("play", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("play")
+
+        def resp(_d, r):
+            if r == "play":
+                self.play_youtube(entry.get_text())
+        dlg.connect("response", resp)
+        dlg.present(self)
+
     def open_any(self, arg):
-        if normalize_magnet(arg) and not os.path.exists(arg):
+        if youtube.is_link(arg) and not os.path.exists(arg):
+            self.play_youtube(arg)
+        elif normalize_magnet(arg) and not os.path.exists(arg):
             self.add_magnet(arg)
         elif arg.lower().endswith(".torrent"):
             self.add_torrent_file(arg)
@@ -2813,7 +3059,7 @@ class App(Adw.Application):
         w = self._win()
         for f in files:
             uri = f.get_uri()
-            if uri.lower().startswith("magnet:"):
+            if uri.lower().startswith("magnet:") or youtube.is_link(uri):
                 w.open_any(uri)
             elif f.get_path():
                 w.open_any(f.get_path())

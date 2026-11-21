@@ -245,3 +245,350 @@ def search(query, limit=12):
         if len(out) >= limit:
             break
     return out
+
+
+# ── any YouTube video, played inside CineHaven ────────────────────────────
+# yt-dlp (the open-source tool VLC and mpv use for YouTube) turns a YouTube link into the
+# video and audio streams. CineHaven uses the yt-dlp installed on the system (or its Python
+# module). YouTube changes often; when an old yt-dlp stops working the user is told how to
+# update it, and can always open the video on youtube.com instead.
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+SUGGEST_URL = "https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&hl=en&q="
+
+
+class YouTubeError(Exception):
+    pass
+
+
+def _ytdlp_version(cmd):
+    try:
+        return subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=30).stdout.strip()
+    except Exception:
+        return ""
+
+
+_cmd_cache = {}
+
+
+def ytdlp_cmd():
+    """(command, version) for the newest yt-dlp available: the system program or the Python module."""
+    if "c" in _cmd_cache:
+        return _cmd_cache["c"]
+    cands = []
+    exe = shutil.which("yt-dlp")
+    if exe:
+        cands.append([exe])
+    try:
+        import importlib.util
+        if importlib.util.find_spec("yt_dlp"):
+            cands.append([sys.executable, "-m", "yt_dlp"])
+    except Exception:
+        pass
+    best, best_v = None, ""
+    for c in cands:
+        v = _ytdlp_version(c)
+        if v and v > best_v:            # versions are dates (2026.10.26), so text order works
+            best, best_v = c, v
+    _cmd_cache["c"] = (best, best_v)
+    return best, best_v
+
+
+def update_hint():
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        return "Update CineHaven to get the newest YouTube support."
+    return ("Updating yt-dlp usually fixes this: in a terminal run  pipx upgrade yt-dlp  or  "
+            "sudo apt install --only-upgrade yt-dlp")
+
+
+def _js_runtimes():
+    """yt-dlp needs a JavaScript runtime for YouTube's player challenges; use any that's installed."""
+    args = []
+    for rt, name in (("deno", "deno"), ("node", "node"), ("bun", "bun"), ("qjs", "quickjs")):
+        if shutil.which(rt):
+            args += ["--js-runtimes", name]
+    return args
+
+
+def _codec_sort():
+    """Prefer formats this computer's graphics chip decodes (see adapt.py)."""
+    try:
+        from . import adapt
+        hw = (adapt._state().get("probe") or {}).get("decode") or {}
+    except Exception:
+        hw = {}
+    if hw.get("av1"):
+        return "res:1080,fps"
+    if hw.get("vp9"):
+        return "res:1080,fps,vcodec:vp9"
+    return "res:1080,fps,vcodec:h264"
+
+
+FRIENDLY = (
+    (r"Sign in to confirm your age|age-restricted|inappropriate for some users",
+     "YouTube only shows this video to signed-in adults"),
+    (r"Private video", "this video is private"),
+    (r"members-only|Join this channel", "this video is for channel members only"),
+    (r"not available in your country|blocked it in your country", "this video isn't available in your country"),
+    (r"Video unavailable|video is unavailable|has been removed|account associated with this video has been terminated",
+     "this video was removed or is unavailable"),
+    (r"confirm you.re not a bot", "YouTube is asking to confirm you're not a bot – try again in a little while"),
+    (r"Premieres in|This live event will begin", "this video hasn't started yet"),
+    (r"timed out|Unable to download webpage|getaddrinfo|Network is unreachable", "couldn't reach YouTube"),
+)
+HOPELESS = r"Private video|members-only|age|removed|terminated|country|Premieres|live event|not a bot|reach YouTube"
+
+
+def _friendly(err):
+    for pat, text in FRIENDLY:
+        if re.search(pat, err, re.I):
+            return text
+    last = [ln for ln in err.splitlines() if "ERROR" in ln]
+    msg = last[-1].split("ERROR:", 1)[-1].strip() if last else (err.strip().splitlines() or ["unknown problem"])[-1]
+    return f"YouTube playback failed ({msg[:160]}). {update_hint()}"
+
+
+def _edl(url):
+    return f"%{len(url.encode())}%{url}"
+
+
+def resolve(link):
+    """Everything needed to play a YouTube video in mpv."""
+    vid = video_id(link)
+    if not vid:
+        raise YouTubeError("that isn't a YouTube video link")
+    cmd, _v = ytdlp_cmd()
+    if not cmd:
+        raise YouTubeError("YouTube playback needs yt-dlp, which isn't installed. "
+                           + ("On Ubuntu: sudo apt install yt-dlp" if sys.platform.startswith("linux")
+                              else update_hint()))
+    args = cmd + ["-J", "--no-playlist", "--no-warnings", *_js_runtimes(),
+                  "-f", "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b", "-S", _codec_sort(),
+                  WATCH_URL + vid]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        raise YouTubeError("YouTube took too long to answer") from None
+    if r.returncode != 0 or not r.stdout.strip():
+        raise YouTubeError(_friendly(r.stderr or "no answer"))
+    info = json.loads(r.stdout)
+    fmts = info.get("requested_formats")
+    if fmts and len(fmts) == 2:
+        v = next((f for f in fmts if f.get("vcodec") not in (None, "none")), fmts[0])
+        a = fmts[1] if v is fmts[0] else fmts[0]
+        headers = v.get("http_headers") or info.get("http_headers") or {}
+        ua = headers.get("User-Agent")
+        vu = relay.add(v["url"], ua, f"video/{v.get('ext') or 'mp4'}")
+        au = relay.add(a["url"], ua, f"audio/{a.get('ext') or 'mp4'}")
+        play = "edl://!no_clip;!no_chapters;" + _edl(vu) + ";!new_stream;!no_clip;!no_chapters;" + _edl(au)
+        quality = f"{v.get('height') or '?'}p {(v.get('vcodec') or '').split('.')[0]}"
+    else:
+        headers = info.get("http_headers") or {}
+        play = info.get("url") or info.get("manifest_url")
+        if play and info.get("protocol") == "https" and "googlevideo.com" in play:
+            play = relay.add(play, headers.get("User-Agent"), f"video/{info.get('ext') or 'mp4'}")
+        quality = f"{info.get('height') or '?'}p"
+    if not play:
+        raise YouTubeError("YouTube didn't offer a playable stream")
+    subs = []
+    for src in (info.get("subtitles") or {}, info.get("automatic_captions") or {}):
+        for lang in ("en", "en-US", "en-GB", "en-orig"):
+            vtt = next((s["url"] for s in src.get(lang, []) if s.get("ext") == "vtt"), None)
+            if vtt:
+                subs.append(vtt)
+                break
+        if subs:
+            break
+    return {"id": vid, "title": info.get("title") or vid,
+            "channel": info.get("channel") or info.get("uploader") or "",
+            "duration": info.get("duration"), "live": bool(info.get("is_live")), "url": play,
+            "ua": headers.get("User-Agent"), "subs": subs, "quality": quality,
+            "thumb": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"}
+
+
+def start_time(link):
+    """The ?t=… start point in a YouTube link, in seconds."""
+    m = re.search(r"[?&#](?:t|start)=(\d+h)?(\d+m)?(\d+)s?", link or "")
+    if not m:
+        return None
+    h = int((m.group(1) or "0h")[:-1])
+    mi = int((m.group(2) or "0m")[:-1])
+    return h * 3600 + mi * 60 + int(m.group(3))
+
+
+def is_link(text):
+    t = (text or "").strip()
+    return bool(re.match(r"(https?://)?(www\.|m\.|music\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)/", t)) \
+        and video_id(t) is not None
+
+
+def suggest(text):
+    """Search suggestions as you type."""
+    try:
+        data = json.loads(fetch(SUGGEST_URL + urllib.parse.quote(text), timeout=5).decode("utf-8", "replace"))
+        return [s for s in data[1] if isinstance(s, str)][:8]
+    except Exception:
+        return []
+
+
+def _text(o):
+    if not o:
+        return ""
+    return o.get("simpleText") or "".join(r.get("text", "") for r in o.get("runs", []))
+
+
+def search_all(query, limit=30):
+    """Any YouTube videos matching the search, as YouTube itself ranks them."""
+    req = urllib.request.Request(SEARCH_URL + urllib.parse.quote_plus(query) + "&sp=EgIQAQ%253D%253D",
+                                 headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)", "Accept-Language": "en"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        page = r.read().decode("utf-8", "replace")
+    m = re.search(r"var ytInitialData = (\{.*?\});</script>", page)
+    if not m:
+        return []
+    found = []
+    _walk(json.loads(m.group(1)), found)
+    official = {cid for cid, _n in CHANNELS}
+    out, seen = [], set()
+    for v in found:
+        vid = v.get("videoId")
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        owner = (v.get("ownerText") or {}).get("runs", [{}])[0]
+        cid = owner.get("navigationEndpoint", {}).get("browseEndpoint", {}).get("browseId")
+        length = _text(v.get("lengthText"))
+        live = not length and "LIVE" in json.dumps(v.get("badges", []))
+        out.append({"id": vid, "title": _text(v.get("title")), "raw_title": _text(v.get("title")),
+                    "channel": owner.get("text", ""), "length": length, "live": live,
+                    "views": _text(v.get("shortViewCountText")), "age": _text(v.get("publishedTimeText")),
+                    "year": None, "description": "", "official": cid in official, "search": True,
+                    "thumb": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg"})
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ── relay: YouTube only serves its video files in pieces ──────────────────
+# googlevideo.com answers "403 Forbidden" to an open-ended request ("give me everything from
+# byte X on") and only serves bounded ranges, as yt-dlp does in 10 MB pieces. FFmpeg's reader
+# always asks open-ended, so the player reads through this small relay on 127.0.0.1, which
+# fetches the same bytes piece by piece and passes them straight on (seeking works as usual).
+import secrets as _secrets  # noqa: E402
+from http.server import BaseHTTPRequestHandler as _BH, ThreadingHTTPServer as _TS  # noqa: E402
+
+CHUNK = 10 * 1024 * 1024
+
+
+def _upstream(url, ua, start, end, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": ua or "Mozilla/5.0", "Range": f"bytes={start}-{end}"})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+class _RelayHandler(_BH):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_a):
+        pass
+
+    def _target(self):
+        return self.server.map.get(self.path.strip("/").split("?")[0])
+
+    def _size(self, t):
+        if t.get("size"):
+            return t["size"]
+        m = re.search(r"[?&]clen=(\d+)", t["url"])
+        if m:
+            t["size"] = int(m.group(1))
+        else:
+            with _upstream(t["url"], t["ua"], 0, 0) as r:
+                t["size"] = int(r.headers.get("Content-Range", "/0").rsplit("/", 1)[1])
+        return t["size"]
+
+    def _head(self, t, start, end, size, partial):
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", t.get("type") or "application/octet-stream")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+
+    def _range(self, size):
+        m = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
+        if not m:
+            return 0, size - 1, False
+        a, b = m.groups()
+        if not a:                                   # "bytes=-500": the last 500 bytes
+            return max(0, size - int(b)), size - 1, True
+        return int(a), min(int(b) if b else size - 1, size - 1), True
+
+    def do_HEAD(self):
+        t = self._target()
+        if not t:
+            return self.send_error(404)
+        try:
+            size = self._size(t)
+        except Exception:
+            return self.send_error(502)
+        start, end, partial = self._range(size)
+        self._head(t, start, end, size, partial)
+
+    def do_GET(self):
+        t = self._target()
+        if not t:
+            return self.send_error(404)
+        try:
+            size = self._size(t)
+        except Exception:
+            return self.send_error(502)
+        start, end, partial = self._range(size)
+        if start > end:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._head(t, start, end, size, partial)
+        pos, tries = start, 0
+        while pos <= end:
+            stop = min(pos + CHUNK - 1, end)
+            try:
+                with _upstream(t["url"], t["ua"], pos, stop) as r:
+                    while True:
+                        block = r.read(65536)
+                        if not block:
+                            break
+                        self.wfile.write(block)
+                        pos += len(block)
+                tries = 0
+            except (BrokenPipeError, ConnectionResetError):
+                return                               # the player moved on (seek or stop)
+            except Exception:
+                tries += 1                           # network hiccup: carry on from where it broke
+                if tries > 4:
+                    return
+                time.sleep(min(2 * tries, 6))
+
+
+class _Relay:
+    def __init__(self):
+        self.httpd = None
+
+    def add(self, url, ua, ctype=None):
+        if not self.httpd:
+            self.httpd = _TS(("127.0.0.1", 0), _RelayHandler)
+            self.httpd.daemon_threads = True
+            self.httpd.map = {}
+            threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        key = _secrets.token_urlsafe(12)
+        mp = self.httpd.map
+        mp[key] = {"url": url, "ua": ua, "type": ctype}
+        while len(mp) > 40:                          # forget the oldest
+            mp.pop(next(iter(mp)))
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/{key}"
+
+
+relay = _Relay()
