@@ -52,7 +52,7 @@ def check(application):
     if win:
         pages = []
         child = win.views.get_first_child() if hasattr(win.views, "get_first_child") else None
-        for name in ("discover", "videos", "live", "youtube", "mylist", "library"):
+        for name in ("discover", "videos", "live", "cameras", "youtube", "mylist", "library"):
             pages.append(name if win.views.get_child_by_name(name) else f"MISSING:{name}")
         result["tabs"] = pages
         result["player"] = type(win.video).__name__
