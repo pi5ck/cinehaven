@@ -6,7 +6,7 @@ MACOS = sys.platform == "darwin"
 
 APP_NAME = "CineHaven"
 APP_ID = os.environ.get("CINEHAVEN_APP_ID", "io.github.cinehaven.CineHaven")
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+{sys.platform}; streaming torrent player)"
 
 
